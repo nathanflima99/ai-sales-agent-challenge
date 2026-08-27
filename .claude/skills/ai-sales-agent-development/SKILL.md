@@ -28,7 +28,12 @@ Build the smallest technically strong solution that answers natural-language que
 
 ## Guardrails
 - Do not add RAG, embeddings, vector databases, arbitrary Python execution, or multi-agent runtime to the application.
-- Do not introduce LangGraph unless the real runtime flow becomes stateful enough to justify a graph.
+- Orchestrate the agent loop with LangGraph `StateGraph`, using LangChain for the model
+  and `@tool` definitions. The challenge brief explicitly requires an AI agent library.
+  Do not use the prebuilt `create_react_agent`: the tool trace, the turn budget and the
+  tool-error handling must stay explicit in our own nodes.
+- Never use `create_csv_agent` or `create_pandas_dataframe_agent`. They execute
+  LLM-generated Python via `PythonAstREPLTool`, which is remote code execution by design.
 - Do not use the LLM as a calculator.
 - Do not pass the full CSV to the model.
 - Prefer one analytical tool over several overlapping tools; add another only when it has a distinct responsibility.
