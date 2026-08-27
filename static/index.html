@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Sales Agent</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --text: #e6e8ee; --muted: #98a0b3; --accent: #6ea8fe;
+    --ok: #4ec9a6; --warn: #e0b341; --err: #e06c75;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --line: #e2e5ea;
+      --text: #1b1f27; --muted: #5d6577; --accent: #2563eb;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--text);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); margin: 0 0 1.5rem; }
+  .banner {
+    display: none; padding: .75rem 1rem; border-radius: 8px; margin-bottom: 1rem;
+    background: rgba(224, 179, 65, .12); border: 1px solid var(--warn); color: var(--text);
+  }
+  form { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  input[type=text] {
+    flex: 1; padding: .7rem .9rem; border-radius: 8px; font: inherit;
+    background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button {
+    padding: .7rem 1.2rem; border-radius: 8px; border: 0; font: inherit; font-weight: 600;
+    background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: progress; }
+  .examples { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: 1.5rem; }
+  .examples button {
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    font-weight: 400; font-size: .85rem; padding: .35rem .7rem;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 1.1rem 1.25rem; margin-bottom: 1rem;
+  }
+  .card h2 { font-size: .75rem; text-transform: uppercase; letter-spacing: .07em;
+             color: var(--muted); margin: 0 0 .6rem; }
+  .answer { font-size: 1.05rem; white-space: pre-wrap; }
+  ul { margin: 0; padding-left: 1.2rem; }
+  .assumptions { border-left: 3px solid var(--accent); }
+  .warnings { border-left: 3px solid var(--warn); }
+  .error { border-left: 3px solid var(--err); }
+  pre {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: .7rem .8rem; overflow-x: auto; font-family: var(--mono);
+    font-size: .82rem; margin: .4rem 0 0;
+  }
+  .step { padding: .6rem 0; border-top: 1px solid var(--line); }
+  .step:first-of-type { border-top: 0; padding-top: 0; }
+  .step-head { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
+               font-family: var(--mono); font-size: .82rem; }
+  .tag { padding: .05rem .45rem; border-radius: 4px; font-size: .72rem; font-weight: 600; }
+  .tag.ok { background: rgba(78,201,166,.15); color: var(--ok); }
+  .tag.error { background: rgba(224,108,117,.15); color: var(--err); }
+  .muted { color: var(--muted); }
+  footer { color: var(--muted); font-size: .8rem; text-align: center; margin-top: 2rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Sales Agent</h1>
+  <p class="sub">Perguntas em linguagem natural sobre <code>sales.csv</code>.
+     O modelo interpreta e narra; o DuckDB calcula.</p>
+
+  <div class="banner" id="banner"></div>
+
+  <form id="form">
+    <input type="text" id="question" autocomplete="off"
+           placeholder="Qual produto foi mais vendido?" required maxlength="1000">
+    <button type="submit" id="submit">Perguntar</button>
+  </form>
+
+  <div class="examples" id="examples"></div>
+
+  <div id="output"></div>
+</main>
+
+<footer id="footer"></footer>
+
+<script>
+const EXAMPLES = [
+  "Qual produto foi mais vendido?",
+  "Qual local teve maior volume de vendas?",
+  "Qual foi o total de vendas no primeiro trimestre de 2012?",
+  "Qual a diferença entre quantidade planejada e realizada?",
+  "Qual o impacto das promoções no preço e volume vendido?",
+];
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+EXAMPLES.forEach((text) => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = text;
+  b.onclick = () => { $("question").value = text; $("form").requestSubmit(); };
+  $("examples").appendChild(b);
+});
+
+fetch("/health").then((r) => r.json()).then((h) => {
+  $("footer").textContent = `${h.dataset_rows.toLocaleString("pt-BR")} linhas carregadas · modelo ${h.llm}`;
+  if (h.llm !== "configured") {
+    const banner = $("banner");
+    banner.style.display = "block";
+    banner.innerHTML = "<strong>OPENAI_API_KEY não configurada.</strong> A aplicação subiu e o dataset " +
+      "está carregado, mas perguntas retornam 503. Configure a chave no <code>.env</code> " +
+      "ou passe para o container e reinicie.";
+  }
+}).catch(() => {});
+
+function card(cls, title, inner) {
+  return `<div class="card ${cls}"><h2>${title}</h2>${inner}</div>`;
+}
+
+function renderTrace(trace) {
+  if (!trace || !trace.length) return "";
+  const steps = trace.map((t) => {
+    const bits = [];
+    if (t.row_count !== null && t.row_count !== undefined) bits.push(`${t.row_count} linha(s)`);
+    if (t.elapsed_ms !== null && t.elapsed_ms !== undefined) bits.push(`${t.elapsed_ms} ms`);
+    if (t.cache_hit) bits.push("cache");
+    return `<div class="step">
+      <div class="step-head">
+        <span class="tag ${t.status}">${t.status}</span>
+        <strong>${esc(t.name)}</strong>
+        <span class="muted">${bits.join(" · ")}</span>
+      </div>
+      ${t.sql ? `<pre>${esc(t.sql)}</pre>` : ""}
+      ${t.error ? `<pre>${esc(t.error)}</pre>` : ""}
+    </div>`;
+  }).join("");
+  return card("", "Trace da execução", steps);
+}
+
+function renderList(cls, title, items) {
+  if (!items || !items.length) return "";
+  return card(cls, title, `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>`);
+}
+
+$("form").onsubmit = async (event) => {
+  event.preventDefault();
+  const question = $("question").value.trim();
+  if (!question) return;
+
+  $("submit").disabled = true;
+  $("output").innerHTML = card("", "Consultando", '<p class="muted">O agente está escrevendo e executando SQL…</p>');
+
+  try {
+    const response = await fetch("/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      const message = data?.error?.message || "Falha inesperada.";
+      $("output").innerHTML = card("error", `Erro ${response.status}`, `<p>${esc(message)}</p>`);
+      return;
+    }
+
+    const meta = data.metadata || {};
+    $("output").innerHTML =
+      card("", "Resposta", `<div class="answer">${esc(data.answer)}</div>`) +
+      renderList("assumptions", "Premissas assumidas", data.assumptions) +
+      renderList("warnings", "Ressalvas", data.warnings) +
+      renderTrace(meta.trace) +
+      card("", "Execução",
+        `<span class="muted">${meta.turns} turno(s) · ${meta.total_ms} ms · request ${esc(meta.request_id)}</span>`);
+  } catch (err) {
+    $("output").innerHTML = card("error", "Erro de rede", `<p>${esc(err.message)}</p>`);
+  } finally {
+    $("submit").disabled = false;
+  }
+};
+</script>
+</body>
+</html>

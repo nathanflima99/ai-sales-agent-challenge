@@ -3,48 +3,53 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Literal
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-from app.analytics.profiling import DatasetProfile, build_profile
+from app.agent.graph import SalesAgent
+from app.agent.model import build_model
+from app.agent.tools import build_tools
+from app.analytics.profiling import build_profile
 from app.analytics.repository import AnalyticsRepository
-from app.config import Settings, get_settings
+from app.api.middleware import request_context_middleware
+from app.api.routes import router
+from app.config import get_settings
 from app.errors import AppError
 from app.logging_setup import setup_logging
 
 logger = logging.getLogger(__name__)
 
-
-class HealthResponse(BaseModel):
-    """Resposta do healthcheck."""
-
-    status: Literal["ok"]
-    llm: Literal["configured", "unconfigured"]
-    dataset_rows: int
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Resolve a configuração e prepara o logging no start da aplicação.
+    """Abre os recursos da aplicação e os guarda em `app.state`.
 
-    Nenhum recurso é criado em import de módulo: a conexão DuckDB (Fase 2) e o
-    client de LLM (Fase 4) serão abertos aqui e guardados em `app.state`.
+    Nada é instanciado em import de módulo: conexão DuckDB, modelo e agente nascem
+    aqui, uma vez, e são injetados. Sem `OPENAI_API_KEY` a aplicação sobe do mesmo
+    jeito, apenas sem agente — `/health` responde e a UI carrega.
     """
     settings = get_settings()
     setup_logging(settings.log_level)
 
-    app.state.settings = settings
-
-    # Dataset ausente ou com schema incompatível derruba o startup com mensagem
-    # nomeando o problema, em vez de falhar na primeira pergunta do usuário.
     repository = AnalyticsRepository.open(settings.dataset_path)
     profile = build_profile(repository.connection)
 
+    agent: SalesAgent | None = None
+    if settings.llm_configured:
+        tools = build_tools(repository, profile, settings)
+        agent = SalesAgent(build_model(settings), tools, profile, settings)
+    else:
+        logger.warning("OPENAI_API_KEY is not set; /ask will return 503")
+
+    app.state.settings = settings
     app.state.repository = repository
     app.state.profile = profile
+    app.state.agent = agent
 
     logger.info(
         "application startup",
@@ -62,13 +67,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    """Monta a aplicação com rotas e tratamento de erros."""
+    """Monta a aplicação com rotas, middleware e tratamento de erros."""
     app = FastAPI(
         title="AI Sales Agent",
-        description="Agente de IA que responde perguntas em linguagem natural sobre sales.csv",
+        description=(
+            "Agente de IA que responde perguntas em linguagem natural sobre sales.csv. "
+            "O modelo interpreta e narra; o DuckDB calcula."
+        ),
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    app.middleware("http")(request_context_middleware)
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
@@ -99,30 +109,21 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        """Última barreira: registra o traceback e devolve um corpo genérico.
-
-        O stack trace vai para o log estruturado, nunca para o cliente.
-        """
+        """Última barreira: registra o traceback e devolve um corpo genérico."""
         logger.exception("unhandled error")
         return JSONResponse(
             status_code=500,
             content={"error": {"code": "internal_error", "message": "Internal server error"}},
         )
 
-    @app.get("/health", response_model=HealthResponse, tags=["ops"])
-    def health(request: Request) -> HealthResponse:
-        """Healthcheck independente do LLM.
+    app.include_router(router)
 
-        Responde `ok` mesmo sem `OPENAI_API_KEY`; o campo `llm` diz se o `/ask`
-        conseguirá funcionar.
-        """
-        settings: Settings = request.app.state.settings
-        profile: DatasetProfile = request.app.state.profile
-        return HealthResponse(
-            status="ok",
-            llm="configured" if settings.llm_configured else "unconfigured",
-            dataset_rows=profile.row_count,
-        )
+    if STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+        @app.get("/", include_in_schema=False)
+        def index() -> FileResponse:
+            return FileResponse(STATIC_DIR / "index.html")
 
     return app
 
