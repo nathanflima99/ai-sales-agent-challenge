@@ -1,0 +1,20 @@
+services:
+  agent:
+    build: .
+    image: ai-sales-agent:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # Vazio quando a variavel nao existe no host. O Settings trata string
+      # vazia como ausente, entao a aplicacao sobe e o /ask devolve 503
+      # explicativo em vez de tentar chamar o provider sem credencial.
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-openai}"
+      LLM_MODEL: "${LLM_MODEL:-}"
+      # Dentro do container, localhost e o proprio container: para alcancar um
+      # Ollama rodando na maquina host, o endereco e host.docker.internal.
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    extra_hosts:
+      # Necessario no Linux; no Docker Desktop ja existe por padrao.
+      - "host.docker.internal:host-gateway"
