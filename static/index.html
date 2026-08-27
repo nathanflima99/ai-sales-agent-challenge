@@ -114,13 +114,13 @@ EXAMPLES.forEach((text) => {
 });
 
 fetch("/health").then((r) => r.json()).then((h) => {
-  $("footer").textContent = `${h.dataset_rows.toLocaleString("pt-BR")} linhas carregadas · modelo ${h.llm}`;
+  $("footer").textContent = `${h.dataset_rows.toLocaleString("pt-BR")} linhas carregadas · ${h.provider}/${h.model} (${h.llm})`;
   if (h.llm !== "configured") {
     const banner = $("banner");
     banner.style.display = "block";
-    banner.innerHTML = "<strong>OPENAI_API_KEY não configurada.</strong> A aplicação subiu e o dataset " +
-      "está carregado, mas perguntas retornam 503. Configure a chave no <code>.env</code> " +
-      "ou passe para o container e reinicie.";
+    banner.innerHTML = "<strong>Modelo não configurado.</strong> A aplicação subiu e o dataset está " +
+      "carregado, mas perguntas retornam 503. Defina <code>OPENAI_API_KEY</code> no <code>.env</code>, " +
+      "ou use um modelo local com <code>LLM_PROVIDER=ollama</code>.";
   }
 }).catch(() => {});
 

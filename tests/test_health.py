@@ -12,7 +12,13 @@ def test_health_ok_without_api_key(client):
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "llm": "unconfigured", "dataset_rows": 25}
+    assert response.json() == {
+        "status": "ok",
+        "llm": "unconfigured",
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "dataset_rows": 25,
+    }
 
 
 def test_health_reports_configured_llm(settings_override):

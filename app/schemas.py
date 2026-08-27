@@ -33,6 +33,8 @@ class HealthResponse(BaseModel):
 
     status: str
     llm: str
+    provider: str
+    model: str
     dataset_rows: int
 
 

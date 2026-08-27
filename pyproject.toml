@@ -12,6 +12,7 @@ dependencies = [
     "sqlglot==30.17.0",
     "langchain-core==1.6.1",
     "langchain-openai==1.6.0",
+    "langchain-ollama==1.1.0",
     "langgraph==1.2.11",
     "pyyaml==6.0.3",
 ]

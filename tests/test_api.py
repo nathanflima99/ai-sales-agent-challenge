@@ -48,7 +48,13 @@ def test_health_is_independent_from_the_llm(client):
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "llm": "unconfigured", "dataset_rows": 25}
+    assert response.json() == {
+        "status": "ok",
+        "llm": "unconfigured",
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "dataset_rows": 25,
+    }
 
 
 def test_every_response_carries_a_request_id(client):
