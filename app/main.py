@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tools = build_tools(repository, profile, settings)
         agent = SalesAgent(build_model(settings), tools, profile, settings)
     else:
-        logger.warning("OPENAI_API_KEY is not set; /ask will return 503")
+        logger.warning("LLM is not configured; /ask will return 503")
 
     app.state.settings = settings
     app.state.repository = repository
@@ -55,7 +55,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         "application startup",
         extra={
             "llm_configured": settings.llm_configured,
-            "model": settings.openai_model,
+            "provider": settings.llm_provider,
+            "model": settings.resolved_model,
             "dataset_rows": profile.row_count,
         },
     )

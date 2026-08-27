@@ -1,6 +1,7 @@
 """Fase 4: as três ferramentas do agente, sem rede e sem modelo."""
 
 import pytest
+from pydantic import ValidationError
 
 from app.agent.model import build_model
 from app.config import Settings
@@ -129,3 +130,48 @@ def test_build_model_returns_a_chat_model_without_touching_the_network():
 
     assert model.temperature == 0
     assert hasattr(model, "bind_tools")
+
+
+# --- escolha de provider ------------------------------------------------------
+
+
+def test_openai_is_the_default_provider():
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_provider == "openai"
+    assert settings.resolved_model == "gpt-4o-mini"
+    assert settings.llm_configured is False
+
+
+def test_ollama_needs_no_credential():
+    """Modelo local não usa chave: o /ask fica disponível sem configurar nada."""
+    settings = Settings(_env_file=None, llm_provider="ollama")
+
+    assert settings.llm_configured is True
+    assert settings.resolved_model == "llama3.1"
+
+
+def test_explicit_model_overrides_the_provider_default():
+    settings = Settings(_env_file=None, llm_provider="ollama", llm_model="qwen2.5")
+
+    assert settings.resolved_model == "qwen2.5"
+
+
+def test_build_model_returns_ollama_without_touching_the_server():
+    """Construir o client não conecta; a indisponibilidade aparece na 1a chamada."""
+    model = build_model(Settings(_env_file=None, llm_provider="ollama"))
+
+    assert type(model).__name__ == "ChatOllama"
+    assert hasattr(model, "bind_tools")
+
+
+def test_openai_error_message_points_to_the_local_alternative():
+    with pytest.raises(LLMNotConfiguredError) as exc_info:
+        build_model(Settings(_env_file=None, llm_provider="openai"))
+
+    assert "LLM_PROVIDER=ollama" in str(exc_info.value)
+
+
+def test_unknown_provider_is_rejected_by_configuration():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, llm_provider="gpt5-turbo-imaginario")

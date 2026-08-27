@@ -34,6 +34,8 @@ def health(request: Request) -> HealthResponse:
     return HealthResponse(
         status="ok",
         llm="configured" if settings.llm_configured else "unconfigured",
+        provider=settings.llm_provider,
+        model=settings.resolved_model,
         dataset_rows=profile.row_count,
     )
 
