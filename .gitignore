@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Ambiente — NUNCA commitar
+.env
+.env.*
+!.env.example
+
+# Agentes / editor
+.claude/worktrees/
+.claude/settings.local.json
+.idea/
+.vscode/
+
+# SO
+.DS_Store
+Thumbs.db
