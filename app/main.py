@@ -9,6 +9,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.analytics.profiling import DatasetProfile, build_profile
+from app.analytics.repository import AnalyticsRepository
 from app.config import Settings, get_settings
 from app.errors import AppError
 from app.logging_setup import setup_logging
@@ -21,6 +23,7 @@ class HealthResponse(BaseModel):
 
     status: Literal["ok"]
     llm: Literal["configured", "unconfigured"]
+    dataset_rows: int
 
 
 @asynccontextmanager
@@ -35,12 +38,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.settings = settings
 
+    # Dataset ausente ou com schema incompatível derruba o startup com mensagem
+    # nomeando o problema, em vez de falhar na primeira pergunta do usuário.
+    repository = AnalyticsRepository.open(settings.dataset_path)
+    profile = build_profile(repository.connection)
+
+    app.state.repository = repository
+    app.state.profile = profile
+
     logger.info(
         "application startup",
-        extra={"llm_configured": settings.llm_configured, "model": settings.openai_model},
+        extra={
+            "llm_configured": settings.llm_configured,
+            "model": settings.openai_model,
+            "dataset_rows": profile.row_count,
+        },
     )
-    yield
-    logger.info("application shutdown")
+    try:
+        yield
+    finally:
+        repository.close()
+        logger.info("application shutdown")
 
 
 def create_app() -> FastAPI:
@@ -100,9 +118,11 @@ def create_app() -> FastAPI:
         conseguirá funcionar.
         """
         settings: Settings = request.app.state.settings
+        profile: DatasetProfile = request.app.state.profile
         return HealthResponse(
             status="ok",
             llm="configured" if settings.llm_configured else "unconfigured",
+            dataset_rows=profile.row_count,
         )
 
     return app
