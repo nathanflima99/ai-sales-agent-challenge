@@ -60,3 +60,22 @@ def real_dataset_repository() -> Iterator[AnalyticsRepository]:
     repository = AnalyticsRepository.open(REAL_DATASET)
     yield repository
     repository.close()
+
+
+@pytest.fixture
+def sample_repository() -> Iterator[AnalyticsRepository]:
+    """Repositório sobre a amostra de 25 linhas."""
+    repository = AnalyticsRepository.open(FIXTURE_DATASET)
+    yield repository
+    repository.close()
+
+
+@pytest.fixture
+def tools(sample_repository: AnalyticsRepository) -> dict[str, Any]:
+    """Ferramentas do agente ligadas à amostra, indexadas por nome."""
+    from app.agent.tools import build_tools
+    from app.analytics.profiling import build_profile
+
+    profile = build_profile(sample_repository.connection)
+    settings = Settings(_env_file=None, dataset_path=FIXTURE_DATASET, max_query_rows=50)
+    return {tool.name: tool for tool in build_tools(sample_repository, profile, settings)}
