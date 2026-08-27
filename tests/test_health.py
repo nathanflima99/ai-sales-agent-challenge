@@ -83,3 +83,29 @@ def test_server_error_does_not_leak_internal_detail():
     }
     assert "/srv/secret" not in response.text
     assert "Traceback" not in response.text
+
+
+def test_llm_not_configured_keeps_actionable_message():
+    """503 de configuração é 5xx, mas a mensagem é a instrução — deve chegar."""
+    app = create_app()
+
+    @app.get("/boom-503")
+    def boom() -> None:
+        raise LLMNotConfiguredError("OPENAI_API_KEY is not set")
+
+    with TestClient(app) as client:
+        response = client.get("/boom-503")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {"code": "llm_not_configured", "message": "OPENAI_API_KEY is not set"}
+    }
+
+
+def test_blank_api_key_counts_as_unconfigured():
+    """`docker compose` com variável não definida no host injeta string vazia."""
+    for blank in ("", "   "):
+        settings = Settings(_env_file=None, openai_api_key=blank)
+
+        assert settings.openai_api_key is None
+        assert settings.llm_configured is False

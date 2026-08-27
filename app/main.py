@@ -56,12 +56,11 @@ def create_app() -> FastAPI:
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         """Traduz falhas de domínio para HTTP, sem expor detalhes internos.
 
-        A mensagem só é devolvida ao cliente em erros 4xx, onde ela é acionável —
-        o guard de SQL, por exemplo, depende de explicar o que rejeitou. Em 5xx a
-        mensagem pode carregar caminho de arquivo ou detalhe de infraestrutura, então
-        vai apenas para o log e o cliente recebe um texto genérico.
+        Quem decide se a mensagem é pública é a própria exceção, via
+        `expose_message`: 4xx expõe, 5xx esconde, e casos como
+        `LLMNotConfiguredError` sobrescrevem porque a mensagem é a instrução de
+        configuração. O detalhe completo vai sempre para o log.
         """
-        is_server_error = exc.status_code >= 500
         logger.warning(
             "handled application error",
             extra={
@@ -75,7 +74,7 @@ def create_app() -> FastAPI:
             content={
                 "error": {
                     "code": exc.code,
-                    "message": "Internal server error" if is_server_error else exc.message,
+                    "message": exc.message if exc.expose_message else "Internal server error",
                 }
             },
         )
