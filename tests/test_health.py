@@ -3,7 +3,7 @@
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.errors import AppError, LLMNotConfiguredError, SQLValidationError
+from app.errors import AgentLoopError, AppError, LLMNotConfiguredError, SQLValidationError
 from app.main import create_app
 
 
@@ -14,16 +14,14 @@ def test_health_ok_without_api_key(client):
     assert response.json() == {"status": "ok", "llm": "unconfigured"}
 
 
-def test_health_reports_configured_llm(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
+def test_health_reports_configured_llm(settings_override):
+    settings_override(openai_api_key="sk-test-not-a-real-key")
 
     with TestClient(create_app()) as client:
         assert client.get("/health").json()["llm"] == "configured"
 
 
-def test_settings_defaults_without_api_key(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
+def test_settings_defaults_without_api_key():
     settings = Settings(_env_file=None)
 
     assert settings.openai_api_key is None
@@ -31,7 +29,7 @@ def test_settings_defaults_without_api_key(monkeypatch):
     assert settings.max_agent_turns == 6
 
 
-def test_api_key_is_not_exposed_by_repr(monkeypatch):
+def test_api_key_is_not_exposed_by_repr():
     """SecretStr precisa mascarar a chave em log, repr e serialização."""
     settings = Settings(_env_file=None, openai_api_key="sk-super-secret")
 
@@ -47,15 +45,16 @@ def test_domain_errors_carry_status_and_code():
     assert SQLValidationError("bad sql").code == "sql_validation_error"
 
 
-def test_app_error_is_translated_without_stack_trace():
+def test_client_error_keeps_actionable_message():
+    """Em 4xx a mensagem é acionável e deve chegar ao cliente."""
     app = create_app()
 
-    @app.get("/boom")
+    @app.get("/boom-4xx")
     def boom() -> None:
         raise SQLValidationError("Only SELECT statements are allowed")
 
     with TestClient(app) as client:
-        response = client.get("/boom")
+        response = client.get("/boom-4xx")
 
     assert response.status_code == 400
     assert response.json() == {
@@ -64,4 +63,23 @@ def test_app_error_is_translated_without_stack_trace():
             "message": "Only SELECT statements are allowed",
         }
     }
+    assert "Traceback" not in response.text
+
+
+def test_server_error_does_not_leak_internal_detail():
+    """Em 5xx a mensagem de domínio pode conter caminho ou detalhe de infra."""
+    app = create_app()
+
+    @app.get("/boom-5xx")
+    def boom() -> None:
+        raise AgentLoopError("failed reading /srv/secret/dataset/sales.csv")
+
+    with TestClient(app) as client:
+        response = client.get("/boom-5xx")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {"code": "agent_loop_error", "message": "Internal server error"}
+    }
+    assert "/srv/secret" not in response.text
     assert "Traceback" not in response.text

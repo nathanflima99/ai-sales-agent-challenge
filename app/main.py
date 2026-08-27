@@ -54,14 +54,30 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-        """Traduz falhas de domínio para HTTP, sem expor detalhes internos."""
+        """Traduz falhas de domínio para HTTP, sem expor detalhes internos.
+
+        A mensagem só é devolvida ao cliente em erros 4xx, onde ela é acionável —
+        o guard de SQL, por exemplo, depende de explicar o que rejeitou. Em 5xx a
+        mensagem pode carregar caminho de arquivo ou detalhe de infraestrutura, então
+        vai apenas para o log e o cliente recebe um texto genérico.
+        """
+        is_server_error = exc.status_code >= 500
         logger.warning(
             "handled application error",
-            extra={"error_code": exc.code, "status_code": exc.status_code},
+            extra={
+                "error_code": exc.code,
+                "status_code": exc.status_code,
+                "detail": exc.message,
+            },
         )
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": {"code": exc.code, "message": exc.message}},
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": "Internal server error" if is_server_error else exc.message,
+                }
+            },
         )
 
     @app.exception_handler(Exception)
