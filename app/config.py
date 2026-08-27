@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,22 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @field_validator("openai_api_key", mode="before")
+    @classmethod
+    def _blank_key_means_unconfigured(cls, value: object) -> object:
+        """Trata chave vazia como ausente.
+
+        `docker compose` com `OPENAI_API_KEY=${OPENAI_API_KEY}` e a variável não
+        definida no host injeta string vazia, não remove a variável. Sem isto o
+        /health anunciaria `configured` e o /ask tentaria chamar o provider com
+        credencial vazia, em vez de devolver o 503 explicativo.
+        """
+        if isinstance(value, SecretStr):
+            value = value.get_secret_value()
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def llm_configured(self) -> bool:

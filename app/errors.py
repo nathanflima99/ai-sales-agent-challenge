@@ -16,6 +16,17 @@ class AppError(Exception):
         super().__init__(message)
         self.message = message
 
+    @property
+    def expose_message(self) -> bool:
+        """Se a mensagem pode ser devolvida ao cliente.
+
+        Erros 4xx são acionáveis por quem chamou — o guard de SQL precisa explicar
+        o que rejeitou. Erros 5xx podem carregar caminho de arquivo ou detalhe de
+        infraestrutura, então o padrão é esconder. Subclasses cuja mensagem é
+        seguramente pública sobrescrevem isto.
+        """
+        return self.status_code < 500
+
 
 class DatasetError(AppError):
     """Dataset ausente, ilegível ou com schema incompatível."""
@@ -46,9 +57,18 @@ class LLMError(AppError):
 
 
 class LLMNotConfiguredError(LLMError):
-    """Nenhuma credencial de LLM configurada."""
+    """Nenhuma credencial de LLM configurada.
+
+    A mensagem é devolvida ao cliente apesar do status 5xx: ela diz como
+    configurar a aplicação e não revela nada sobre o servidor. Esconder isso
+    transformaria um erro de operação evidente num 500 opaco.
+    """
 
     code = "llm_not_configured"
+
+    @property
+    def expose_message(self) -> bool:
+        return True
 
 
 class AgentLoopError(AppError):
