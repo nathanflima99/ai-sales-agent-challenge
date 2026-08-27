@@ -8,10 +8,11 @@ from app.main import create_app
 
 
 def test_health_ok_without_api_key(client):
+    """A aplicacao sobe e reporta o dataset carregado mesmo sem credencial."""
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "llm": "unconfigured"}
+    assert response.json() == {"status": "ok", "llm": "unconfigured", "dataset_rows": 25}
 
 
 def test_health_reports_configured_llm(settings_override):
