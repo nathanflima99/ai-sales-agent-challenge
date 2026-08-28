@@ -68,7 +68,8 @@ def _build_openai(settings: Settings) -> BaseChatModel:
 
     if settings.openai_api_key is None:
         raise LLMNotConfiguredError(
-            "OPENAI_API_KEY is not set. Set it in .env, or switch to Ollama."
+            "OPENAI_API_KEY is not set. Set it in .env, or switch to local Ollama "
+            "with LLM_PROVIDER=ollama."
         )
 
     return ChatOpenAI(
