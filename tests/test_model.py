@@ -21,7 +21,7 @@ def test_ollama_cloud_sends_bearer_api_key() -> None:
     settings = Settings(
         _env_file=None,
         llm_provider="ollama",
-        llm_model="qwen3.5:cloud",
+        llm_model="qwen3.5:397b",
         ollama_base_url="https://ollama.com",
         ollama_api_key="ollama-secret",
     )
@@ -64,7 +64,7 @@ def test_local_ollama_does_not_require_api_key() -> None:
 
 def test_ollama_settings_are_loaded_from_environment(monkeypatch) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
-    monkeypatch.setenv("LLM_MODEL", "qwen3.5:cloud")
+    monkeypatch.setenv("LLM_MODEL", "qwen3.5:397b")
     monkeypatch.setenv("OLLAMA_BASE_URL", "https://ollama.com")
     monkeypatch.setenv("OLLAMA_API_KEY", "cloud-key")
     monkeypatch.setenv("OLLAMA_THINKING", "false")
@@ -72,7 +72,7 @@ def test_ollama_settings_are_loaded_from_environment(monkeypatch) -> None:
     settings = Settings(_env_file=None)
 
     assert settings.llm_provider == "ollama"
-    assert settings.resolved_model == "qwen3.5:cloud"
+    assert settings.resolved_model == "qwen3.5:397b"
     assert settings.ollama_base_url == "https://ollama.com"
     assert settings.ollama_api_key is not None
     assert settings.ollama_api_key.get_secret_value() == "cloud-key"
