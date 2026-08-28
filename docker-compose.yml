@@ -14,6 +14,11 @@ services:
       # Dentro do container, localhost e o proprio container: para alcancar um
       # Ollama rodando na maquina host, o endereco e host.docker.internal.
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      # Ollama local pode deixar a chave vazia. No acesso direto a ollama.com,
+      # a chave e obrigatoria e precisa chegar ao container.
+      OLLAMA_API_KEY: "${OLLAMA_API_KEY:-}"
+      # Mantem no Compose o mesmo default do Settings/provider.
+      OLLAMA_THINKING: "${OLLAMA_THINKING:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
     extra_hosts:
       # Necessario no Linux; no Docker Desktop ja existe por padrao.

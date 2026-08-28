@@ -48,7 +48,7 @@ Ollama e configure o endpoint remoto e a chave por variável de ambiente:
 
 ```env
 LLM_PROVIDER=ollama
-LLM_MODEL=qwen3.5:cloud
+LLM_MODEL=qwen3.5:397b
 OLLAMA_BASE_URL=https://ollama.com
 OLLAMA_API_KEY=sua-chave-aqui
 OLLAMA_THINKING=false
@@ -65,7 +65,7 @@ Ou via Docker:
 ```bash
 docker run --rm -p 8000:8000 \
   -e LLM_PROVIDER=ollama \
-  -e LLM_MODEL=qwen3.5:cloud \
+  -e LLM_MODEL=qwen3.5:397b \
   -e OLLAMA_BASE_URL=https://ollama.com \
   -e OLLAMA_API_KEY="$OLLAMA_API_KEY" \
   -e OLLAMA_THINKING=false \
@@ -74,8 +74,10 @@ docker run --rm -p 8000:8000 \
 
 `OLLAMA_API_KEY` é opcional para servidores locais sem autenticação e obrigatória
 quando `OLLAMA_BASE_URL=https://ollama.com`. A chave é armazenada como `SecretStr`
-e não é escrita nos logs pelo projeto. Use em `LLM_MODEL` um modelo disponível na
-sua conta/endpoint; `qwen3.5:cloud` é o exemplo recomendado para testar este agente.
+e não é escrita nos logs pelo projeto. No acesso direto a `https://ollama.com`, use
+em `LLM_MODEL` um nome retornado por `/api/tags`; `qwen3.5:397b` é o exemplo atual.
+O script `TESTAR_OLLAMA_CLOUD.bat` consulta esse catálogo e seleciona automaticamente
+um Qwen 3.5 disponível para a conta.
 
 > O modelo Ollama **precisa suportar tool calling**. Um modelo sem esse suporte
 > nunca chama a ferramenta de consulta, então nunca toca o dataset e não tem como
