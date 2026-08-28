@@ -118,9 +118,15 @@ fetch("/health").then((r) => r.json()).then((h) => {
   if (h.llm !== "configured") {
     const banner = $("banner");
     banner.style.display = "block";
-    banner.innerHTML = "<strong>Modelo não configurado.</strong> A aplicação subiu e o dataset está " +
-      "carregado, mas perguntas retornam 503. Defina <code>OPENAI_API_KEY</code> no <code>.env</code>, " +
-      "ou use um modelo local com <code>LLM_PROVIDER=ollama</code>.";
+    if (h.provider === "ollama") {
+      banner.innerHTML = "<strong>Ollama Cloud não configurado.</strong> A aplicação subiu e o dataset está " +
+        "carregado, mas perguntas retornam 503. Defina <code>OLLAMA_API_KEY</code> no <code>.env</code> " +
+        "e reinicie a aplicação.";
+    } else {
+      banner.innerHTML = "<strong>Modelo não configurado.</strong> A aplicação subiu e o dataset está " +
+        "carregado, mas perguntas retornam 503. Defina <code>OPENAI_API_KEY</code> no <code>.env</code>, " +
+        "ou use um modelo local com <code>LLM_PROVIDER=ollama</code>.";
+    }
   }
 }).catch(() => {});
 
