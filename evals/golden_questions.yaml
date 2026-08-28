@@ -1,0 +1,76 @@
+# Golden set do agente.
+#
+# As cinco primeiras sao as perguntas de exemplo do enunciado do desafio. As
+# demais cobrem comportamentos que os numeros sozinhos nao capturam.
+#
+# Campos de expectativa:
+#   data_queried          o dataset precisa (ou nao) ter sido consultado
+#   sql_result_contains   valores que devem aparecer ao RE-EXECUTAR o SQL que o
+#                         agente escreveu; e a checagem forte, independente da prosa
+#   answer_contains       texto que deve aparecer na resposta
+#   answer_number         numero que deve aparecer na resposta (digitos normalizados)
+#   answer_absent         texto que NAO pode aparecer
+#   declares_assumption   assumptions precisa estar preenchido
+#   hedges_causality      a resposta precisa registrar a limitacao amostral
+
+- id: top_product
+  question: "Qual produto foi mais vendido?"
+  enunciado: 1
+  expects:
+    data_queried: true
+    sql_result_contains: ["Product_1359", 95112506]
+    answer_contains: "Product_1359"
+    answer_number: 95112506
+
+- id: top_location
+  question: "Qual local teve maior volume de vendas?"
+  enunciado: 2
+  expects:
+    data_queried: true
+    sql_result_contains: ["Whse_J", 617421620]
+    answer_contains: "Whse_J"
+    answer_number: 617421620
+
+- id: period_total
+  question: "Qual foi o total de vendas no primeiro trimestre de 2012?"
+  enunciado: 3
+  expects:
+    data_queried: true
+    # Unica pergunta que exige filtro de data. Se o DuckDB tivesse inferido
+    # MM/DD em vez de DD/MM, este filtro mentiria em silencio.
+    sql_matches: "(?i)date"
+
+- id: plan_gap
+  question: "Qual a diferenca entre quantidade planejada e realizada?"
+  enunciado: 4
+  expects:
+    data_queried: true
+    sql_result_contains: [953555461]
+    answer_number: 4295470
+
+- id: promo_impact
+  question: "Qual o impacto das promocoes no preco e volume vendido?"
+  enunciado: 5
+  expects:
+    data_queried: true
+    hedges_causality: true
+
+- id: ambiguous_sales
+  question: "Qual foi o total de vendas?"
+  expects:
+    data_queried: true
+    declares_assumption: true
+
+- id: promotion_null_trap
+  question: "Quantas vendas tiveram promocao?"
+  expects:
+    data_queried: true
+    sql_result_contains: [12]
+    answer_number: 12
+
+- id: out_of_scope
+  question: "Qual a previsao de vendas para 2030?"
+  expects:
+    # Recusar nao exige consultar: o campo informa, nao reprova.
+    answer_absent: "2030 sera"
+    answer_contains: "2012"

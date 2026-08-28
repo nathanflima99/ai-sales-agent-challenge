@@ -245,9 +245,17 @@ Comportamentos que valem observar:
 ## Testes
 
 ```bash
-pytest                    # 100 testes, sem rede e sem chave
+pytest                    # 124 testes, sem rede e sem chave
 ruff check . && ruff format --check .
 mypy
+```
+
+Com a aplicação de pé e um provider configurado, o golden set roda contra o modelo
+real:
+
+```bash
+python evals/run_evals.py
+python evals/run_evals.py --only top_product     # um caso só
 ```
 
 Três camadas com naturezas diferentes ([ADR 0006](docs/adr/0006-testing-a-nondeterministic-system.md)):
@@ -258,9 +266,19 @@ Três camadas com naturezas diferentes ([ADR 0006](docs/adr/0006-testing-a-nonde
 | SQL Guard | `tests/test_sql_guard.py` | Nada além de leitura da tabela `sales` passa. |
 | Agente | `tests/test_agent.py` | O grafo se comporta: self-correction, cota de turnos, degradação. |
 | API | `tests/test_api.py` | Contrato HTTP, validação e erros sem stack trace. |
+| Evals | `evals/` | O agente ainda chega ao resultado certo com um modelo real. |
 
 O agente é testado com um modelo falso (`tests/fakes.py`), então a suíte roda sem
 rede, sem chave e sem consumir tokens.
+
+Os evals ficam fora do `pytest` porque medem outra coisa: os testes garantem que o
+**código** está correto, o golden set mede se o **agente** continua chegando lá.
+
+A asserção central deles não é sobre a prosa. O runner extrai o SQL que o agente
+escreveu do trace e **o re-executa contra o mesmo DuckDB**, conferindo se produz o
+valor esperado. Uma asserção secundária compara o texto com os dígitos
+normalizados. Isso separa duas falhas distintas: *chegou ao dado certo* e *narrou o
+dado certo* — um modelo pode acertar a primeira e inventar um número na segunda.
 
 ---
 
@@ -327,21 +345,43 @@ Executado ponta a ponta contra **`qwen3.5:4b`** (4.7B, Q4_K_M) servido por Ollam
 0.32.6 num servidor remoto, alcançado por túnel SSH — sem expor a porta 11434 na
 rede.
 
-| # | Pergunta | Esperado | Resultado |
-|---|---|---|---|
-| 1 | Qual produto foi mais vendido? | `Product_1359` / 95.112.506 | ✅ (3 repetições, SQL idêntico) |
-| 2 | Qual local teve maior volume? | `Whse_J` / 617.421.620 | ✅ |
-| 3 | Quantidade total realizada | 953.555.461 | ✅ |
-| 4 | Quantidade total planejada | 949.259.991 | ✅ |
-| 5 | Diferença planejado × realizado | 4.295.470 | ✅ com o sentido explicado |
-| 6 | Impacto das promoções | −20% no preço, causalidade recusada | ✅ |
+Resultado de `python evals/run_evals.py` — **8/8 aprovados**:
 
-Todas as respostas passaram por SQL real no DuckDB. Em duas sondas adicionais o
-agente **consultou o dataset mesmo para um fato presente no system prompt**, e
-recusou corretamente uma previsão para 2030 sem inventar números.
+```text
+CASO                      RESULTADO   TEMPO     TURNOS
+------------------------------------------------------------------------
+top_product               APROVADO      86.6s      2
+top_location              APROVADO     102.7s      3
+period_total              APROVADO      84.0s      2
+plan_gap                  APROVADO      82.6s      2
+promo_impact              APROVADO     292.1s      6
+ambiguous_sales           APROVADO     155.2s      4
+promotion_null_trap       APROVADO     115.3s      3
+out_of_scope              APROVADO      57.4s      1
+------------------------------------------------------------------------
+TAXA DE ACERTO: 8/8   tempo medio 122.0s por pergunta
+```
 
-**Latência: 55 a 143 s por pergunta**, média ~90 s. Dominada pelo *thinking* do
-modelo, não pelo dado — as consultas ao DuckDB levaram entre 1,8 e 332 ms.
+Os cinco primeiros são as perguntas de exemplo do enunciado. Em cada um deles o
+SQL escrito pelo agente foi **reexecutado pelo harness** e produziu o valor de
+ground truth — `Product_1359` / 95.112.506, `Whse_J` / 617.421.620, e assim por
+diante.
+
+Três casos merecem destaque, porque mostram comportamento e não só aritmética:
+
+- **`promotion_null_trap`** — perguntado quantas vendas tiveram promoção, o agente
+  escreveu `WHERE promotion_type = 'Flash'` e chegou a 12. Evitou sozinho o
+  `IS NOT NULL` que devolveria as 203.635 linhas.
+- **`period_total`** — filtrou com `date >= '2012-01-01' AND date <= '2012-03-31'`,
+  confirmando o parsing `DD/MM/YYYY` de ponta a ponta.
+- **`ambiguous_sales`** — consultou quantidade **e** faturamento, e declarou em
+  `assumptions` qual leitura usou.
+
+Na pergunta de promoções o agente gastou 6 turnos e 4 consultas antes de concluir,
+e registrou a limitação amostral em vez de atribuir causalidade.
+
+**Latência: 57 a 292 s por pergunta**, média 122 s. É quase toda inferência do
+modelo de 4B — as consultas ao DuckDB levaram entre 1,8 e 332 ms.
 
 **Docker validado**: `docker build` bem-sucedido, container sobe como usuário
 não-root, `HEALTHCHECK` reporta `healthy`, e `/ask` respondeu o ground truth de
@@ -364,10 +404,9 @@ DuckDB. Um modelo maior reduziria os dois primeiros itens; a arquitetura não mu
 
 ## Limitações conhecidas
 
-**Evals ainda não implementados.** O desenho está no
-[ADR 0006](docs/adr/0006-testing-a-nondeterministic-system.md): golden set com as
-cinco perguntas do enunciado, asserção primária sobre o resultado da ferramenta no
-trace e secundária sobre o texto com dígitos normalizados.
+**Latência alta com modelo local.** ~90 s por pergunta com o `qwen3.5:4b`, quase
+tudo em inferência — o DuckDB responde em milissegundos. Um modelo maior ou uma
+API hospedada reduziria isso a poucos segundos, sem tocar na arquitetura.
 
 **Sem memória entre perguntas.** Cada requisição é independente; não há follow-up
 ("e no ano anterior?"). O LangGraph resolve isso com `MemorySaver` e `thread_id`,
