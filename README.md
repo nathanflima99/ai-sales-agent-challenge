@@ -29,7 +29,7 @@ falta. Para responder perguntas, escolha um provider abaixo.
 docker run --rm -p 8000:8000 -e OPENAI_API_KEY=sk-... ai-sales-agent
 ```
 
-### Com Ollama (local, sem chave e sem custo)
+### Com Ollama local (sem chave e sem custo por token)
 
 ```bash
 ollama pull qwen3.5:4b
@@ -37,15 +37,70 @@ docker run --rm -p 8000:8000 \
   -e LLM_PROVIDER=ollama \
   -e LLM_MODEL=qwen3.5:4b \
   -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
+  -e OLLAMA_THINKING=false \
   ai-sales-agent
 ```
 
+### Com Ollama Cloud (sem instalar Ollama localmente)
+
+A API hospedada do Ollama pode ser usada diretamente. Crie uma API key na sua conta
+Ollama e configure o endpoint remoto e a chave por variável de ambiente:
+
+```env
+LLM_PROVIDER=ollama
+LLM_MODEL=qwen3.5:cloud
+OLLAMA_BASE_URL=https://ollama.com
+OLLAMA_API_KEY=sua-chave-aqui
+OLLAMA_THINKING=false
+```
+
+Depois suba a aplicação normalmente:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+Ou via Docker:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e LLM_PROVIDER=ollama \
+  -e LLM_MODEL=qwen3.5:cloud \
+  -e OLLAMA_BASE_URL=https://ollama.com \
+  -e OLLAMA_API_KEY="$OLLAMA_API_KEY" \
+  -e OLLAMA_THINKING=false \
+  ai-sales-agent
+```
+
+`OLLAMA_API_KEY` é opcional para servidores locais sem autenticação e obrigatória
+quando `OLLAMA_BASE_URL=https://ollama.com`. A chave é armazenada como `SecretStr`
+e não é escrita nos logs pelo projeto. Use em `LLM_MODEL` um modelo disponível na
+sua conta/endpoint; `qwen3.5:cloud` é o exemplo recomendado para testar este agente.
+
 > O modelo Ollama **precisa suportar tool calling**. Um modelo sem esse suporte
 > nunca chama a ferramenta de consulta, então nunca toca o dataset e não tem como
-> responder. Confira antes com `ollama show <modelo>`: a capacidade `tools`
-> precisa estar listada. `gemma3:4b`, por exemplo, **não** a tem.
+> responder. Confira antes com `ollama show <modelo>` quando estiver usando Ollama
+> local: a capacidade `tools` precisa estar listada. `gemma3:4b`, por exemplo,
+> **não** a tem.
 >
-> Validado com `qwen3.5:4b` — ver [Validação com modelo real](#validação-com-modelo-real).
+> `qwen3.5:4b` foi validado ponta a ponta — ver
+> [Validação com modelo real](#validação-com-modelo-real).
+
+### Thinking / reasoning
+
+O Sales usa `OLLAMA_THINKING=false` por padrão. Em `langchain-ollama==1.1.0`, isso
+é enviado ao Ollama através de `ChatOllama(reasoning=False)`, equivalente a
+`think: false` na API do Ollama.
+
+A motivação é latência: o agente já delega cálculo ao DuckDB e usa o LLM para
+planejar consultas, interpretar e narrar. Para fazer um benchmark A/B, basta trocar:
+
+```env
+OLLAMA_THINKING=true
+```
+
+Não altere prompts ou golden set ao comparar os modos; assim a única variável do
+experimento continua sendo thinking ligado/desligado.
 
 ---
 
@@ -60,7 +115,7 @@ docker run --rm -p 8000:8000 \
 | **SQLGlot** | Validação do SQL | Análise por AST, não por regex ([ADR 0003](docs/adr/0003-sqlglot-ast-validation.md)) |
 | **FastAPI + Uvicorn** | API HTTP | Validação por schema e OpenAPI gerado |
 | **Pydantic** | Schemas e configuração | Contrato tipado e `SecretStr` para credenciais |
-| **Pytest** | Testes | 100 testes, sem rede |
+| **Pytest** | Testes | Suíte determinística sem rede |
 | **Ruff + Mypy** | Lint e tipagem | — |
 | **Docker** | Empacotamento | Execução reproduzível |
 
@@ -125,14 +180,16 @@ uvicorn app.main:app --reload
 
 ### Configuração
 
-Todas as variáveis são opcionais; os padrões estão em `.env.example`.
+Os padrões estão em `.env.example`.
 
 | Variável | Padrão | Descrição |
 |---|---|---|
 | `LLM_PROVIDER` | `openai` | `openai` ou `ollama` |
 | `LLM_MODEL` | vazio | Vazio usa o padrão do provider (`gpt-4o-mini` / `qwen3.5:4b`) |
 | `OPENAI_API_KEY` | — | Exigida quando o provider é `openai` |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | No Docker, use `host.docker.internal` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Host local, remoto ou `https://ollama.com` |
+| `OLLAMA_API_KEY` | — | Opcional localmente; obrigatória para acesso direto a `ollama.com` |
+| `OLLAMA_THINKING` | `false` | Ativa/desativa reasoning/thinking do Ollama |
 | `DATASET_PATH` | `dataset/sales.csv` | |
 | `MAX_QUERY_ROWS` | `100` | Teto de linhas por consulta |
 | `MAX_AGENT_TURNS` | `6` | Cota de turnos do agente |
@@ -245,7 +302,7 @@ Comportamentos que valem observar:
 ## Testes
 
 ```bash
-pytest                    # 124 testes, sem rede e sem chave
+pytest
 ruff check . && ruff format --check .
 mypy
 ```
@@ -266,10 +323,12 @@ Três camadas com naturezas diferentes ([ADR 0006](docs/adr/0006-testing-a-nonde
 | SQL Guard | `tests/test_sql_guard.py` | Nada além de leitura da tabela `sales` passa. |
 | Agente | `tests/test_agent.py` | O grafo se comporta: self-correction, cota de turnos, degradação. |
 | API | `tests/test_api.py` | Contrato HTTP, validação e erros sem stack trace. |
+| Provider | `tests/test_model.py` | Thinking, autenticação Ollama Cloud e isolamento do OpenAI. |
 | Evals | `evals/` | O agente ainda chega ao resultado certo com um modelo real. |
 
 O agente é testado com um modelo falso (`tests/fakes.py`), então a suíte roda sem
-rede, sem chave e sem consumir tokens.
+rede, sem chave e sem consumir tokens. Os testes do provider apenas instanciam os
+clientes; não fazem requisições externas.
 
 Os evals ficam fora do `pytest` porque medem outra coisa: os testes garantem que o
 **código** está correto, o golden set mede se o **agente** continua chegando lá.
@@ -314,7 +373,7 @@ mudaram o desenho da solução:
 | SQL destrutivo gerado pelo modelo | Validação de AST; só `SELECT`/`UNION` sobre `sales` |
 | Leitura de arquivo do container via SQL | Funções de tabela (`read_csv_auto`, `glob`, …) bloqueadas; toda tabela sem nome é rejeitada |
 | Execução de código arbitrário | Nenhum `exec`/`eval`; agentes de CSV/Pandas do LangChain proibidos ([ADR 0005](docs/adr/0005-no-pandas-csv-agent.md)) |
-| Vazamento de credencial | `SecretStr`; teste asserindo que a chave não aparece em `repr` nem em `model_dump` |
+| Vazamento de credencial | `SecretStr`; API keys não são registradas em logs |
 | Vazamento de detalhe interno em erro | Corpo de 5xx é genérico; o detalhe vai só para o log |
 | Consumo descontrolado de tokens | Cota de turnos mais `recursion_limit` |
 | Resposta grande demais | `LIMIT` injetado e reduzido quando o modelo pede alto demais |
@@ -341,9 +400,12 @@ medida, para não tomar esse atalho.
 
 ## Validação com modelo real
 
+### Baseline histórico — antes de fixar thinking desligado
+
 Executado ponta a ponta contra **`qwen3.5:4b`** (4.7B, Q4_K_M) servido por Ollama
 0.32.6 num servidor remoto, alcançado por túnel SSH — sem expor a porta 11434 na
-rede.
+rede. Esta execução foi feita antes de `OLLAMA_THINKING=false` ser explicitado no
+provider e deve ser preservada como baseline para o novo benchmark A/B.
 
 Resultado de `python evals/run_evals.py` — **8/8 aprovados**:
 
@@ -380,8 +442,8 @@ Três casos merecem destaque, porque mostram comportamento e não só aritmétic
 Na pergunta de promoções o agente gastou 6 turnos e 4 consultas antes de concluir,
 e registrou a limitação amostral em vez de atribuir causalidade.
 
-**Latência: 57 a 292 s por pergunta**, média 122 s. É quase toda inferência do
-modelo de 4B — as consultas ao DuckDB levaram entre 1,8 e 332 ms.
+**Baseline de latência: 57 a 292 s por pergunta**, média 122 s. É quase toda
+inferência do modelo de 4B — as consultas ao DuckDB levaram entre 1,8 e 332 ms.
 
 **Docker validado**: `docker build` bem-sucedido, container sobe como usuário
 não-root, `HEALTHCHECK` reporta `healthy`, e `/ask` respondeu o ground truth de
@@ -397,16 +459,18 @@ dentro do container alcançando o túnel via `host.docker.internal`.
   texto. Nesse caso a requisição falha de forma controlada em vez de devolver
   HTTP 200 com `answer` em branco.
 
-Nenhuma dessas limitações afetou a correção dos números, porque quem calcula é o
-DuckDB. Um modelo maior reduziria os dois primeiros itens; a arquitetura não muda.
+Nenhuma dessas limitações afetou a correção dos números no baseline, porque quem
+calcula é o DuckDB. O próximo passo é repetir exatamente o mesmo golden set com
+`OLLAMA_THINKING=false` e comparar acerto, turnos e latência.
 
 ---
 
 ## Limitações conhecidas
 
-**Latência alta com modelo local.** ~90 s por pergunta com o `qwen3.5:4b`, quase
-tudo em inferência — o DuckDB responde em milissegundos. Um modelo maior ou uma
-API hospedada reduziria isso a poucos segundos, sem tocar na arquitetura.
+**Latência alta no baseline local.** O benchmark histórico com `qwen3.5:4b` chegou
+a média de 122 s por pergunta, quase tudo em inferência. O modo thinking agora fica
+desligado por padrão justamente para medir e reduzir esse custo; o novo golden set
+deve ser registrado antes de substituir o baseline acima.
 
 **Sem memória entre perguntas.** Cada requisição é independente; não há follow-up
 ("e no ano anterior?"). O LangGraph resolve isso com `MemorySaver` e `thread_id`,
@@ -420,12 +484,14 @@ conhecimento do negócio que o dataset não carrega.
 
 ## Próximos passos
 
-1. Automatizar o golden set como harness reproduzível (`evals/`), hoje executado
-   manualmente — ver [ADR 0006](docs/adr/0006-testing-a-nondeterministic-system.md)
-2. Comparar `qwen3.5:4b` com um modelo maior medindo a regressão, em vez de opinar
-3. CI no GitHub Actions com `ruff`, `mypy` e `pytest`
-4. Conversas multi-turno com `MemorySaver`
-5. Streaming via `astream_events`, mostrando o agente raciocinando
+1. Rodar o golden set completo com `OLLAMA_THINKING=false` e comparar contra o
+   baseline 8/8 / 122 s acima.
+2. Validar o mesmo fluxo com Ollama Cloud usando apenas `OLLAMA_BASE_URL` e
+   `OLLAMA_API_KEY`, sem runtime Ollama local.
+3. Comparar `qwen3.5:4b` com um modelo maior medindo regressão, em vez de opinar.
+4. CI no GitHub Actions com `ruff`, `mypy` e `pytest`.
+5. Conversas multi-turno com `MemorySaver`.
+6. Streaming via `astream_events`.
 
 ---
 
@@ -434,7 +500,7 @@ conhecimento do negócio que o dataset não carrega.
 ```text
 app/
 ├── main.py              app factory, lifespan, exception handlers
-├── config.py            Settings (provider, modelo, limites)
+├── config.py            Settings (provider, modelo, credenciais, limites)
 ├── schemas.py           contrato HTTP
 ├── errors.py            exceções de domínio
 ├── logging_setup.py     logging JSON com request_id
@@ -444,5 +510,5 @@ app/
 dataset/sales.csv        dataset do desafio
 docs/adr/                decisões arquiteturais
 static/index.html        interface web
-tests/                   100 testes
+tests/                   testes determinísticos e de provider
 ```
