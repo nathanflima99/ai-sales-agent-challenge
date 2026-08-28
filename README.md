@@ -130,7 +130,7 @@ Todas as variáveis são opcionais; os padrões estão em `.env.example`.
 | Variável | Padrão | Descrição |
 |---|---|---|
 | `LLM_PROVIDER` | `openai` | `openai` ou `ollama` |
-| `LLM_MODEL` | vazio | Vazio usa o padrão do provider (`gpt-4o-mini` / `llama3.1`) |
+| `LLM_MODEL` | vazio | Vazio usa o padrão do provider (`gpt-4o-mini` / `qwen3.5:4b`) |
 | `OPENAI_API_KEY` | — | Exigida quando o provider é `openai` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | No Docker, use `host.docker.internal` |
 | `DATASET_PATH` | `dataset/sales.csv` | |

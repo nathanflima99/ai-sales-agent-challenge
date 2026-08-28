@@ -208,7 +208,8 @@ def test_ollama_needs_no_credential():
     settings = Settings(_env_file=None, llm_provider="ollama")
 
     assert settings.llm_configured is True
-    assert settings.resolved_model == "llama3.1"
+    # O padrão é o modelo validado ponta a ponta contra este dataset.
+    assert settings.resolved_model == "qwen3.5:4b"
 
 
 def test_explicit_model_overrides_the_provider_default():

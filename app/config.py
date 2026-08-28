@@ -8,9 +8,12 @@ from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: Modelo padrão por provider, usado quando `LLM_MODEL` não é informado.
+#: O padrão do Ollama é o modelo efetivamente validado ponta a ponta contra este
+#: dataset — ver a seção de validação do README. Um default não exercitado seria
+#: um convite a falhar na primeira execução de quem clona o repositório.
 DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4o-mini",
-    "ollama": "llama3.1",
+    "ollama": "qwen3.5:4b",
 }
 
 

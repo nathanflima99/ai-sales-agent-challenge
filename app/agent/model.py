@@ -27,7 +27,8 @@ Provider = Literal["openai", "ollama"]
 #: Modelos Ollama sem suporte a tool calling não conseguem operar este agente:
 #: sem tool call ele nunca consulta o DuckDB e não tem como responder.
 TOOL_CALLING_HINT = (
-    "The Ollama model must support tool calling (e.g. llama3.1, qwen2.5, mistral-nemo). "
+    "The Ollama model must support tool calling (check `ollama show <model>` for the "
+    "'tools' capability; qwen3.5, qwen2.5 and mistral-nemo have it, gemma3 does not). "
     "Models without it cannot query the dataset."
 )
 
