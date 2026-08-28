@@ -23,7 +23,7 @@ from langgraph.graph import END, StateGraph
 
 from app.agent.prompts import build_system_prompt
 from app.agent.state import AgentState, ToolTrace
-from app.agent.tools import SUBMIT_ANSWER, FinalAnswer
+from app.agent.tools import SUBMIT_ANSWER, FinalAnswer, normalize_text_list
 from app.analytics.profiling import DatasetProfile
 from app.config import Settings
 from app.errors import AgentLoopError, AppError, LLMError
@@ -31,6 +31,12 @@ from app.errors import AgentLoopError, AppError, LLMError
 logger = logging.getLogger(__name__)
 
 _RETRY_HINT = "Fix the problem described above and call the tool again."
+
+#: Registrado em `warnings` quando o modelo encerra em prosa, sem a tool de saída.
+#: A informação existia só no trace; aqui ela chega a quem lê apenas a resposta.
+FALLBACK_WARNING = (
+    "The model returned a final response without using the structured submit_answer tool."
+)
 
 
 @dataclass(slots=True)
@@ -42,6 +48,10 @@ class AgentResult:
     warnings: list[str]
     trace: list[ToolTrace]
     turns: int
+    #: Verdadeiro apenas se houve ao menos um `query_sales_data` bem-sucedido.
+    #: Nomeado pelo que conseguimos provar: que o dataset foi consultado. Não
+    #: afirma que a resposta está correta, nem que usou o resultado da consulta.
+    data_queried: bool = False
 
 
 class SalesAgent:
@@ -158,10 +168,12 @@ class SalesAgent:
             for call in last.tool_calls:
                 if call["name"] == SUBMIT_ANSWER:
                     args = call["args"]
+                    # Normalização defensiva: modelos pequenos mandam string ou
+                    # objeto onde o schema pede lista. Ver `normalize_text_list`.
                     final = FinalAnswer(
                         answer=str(args.get("answer", "")),
-                        assumptions=list(args.get("assumptions") or []),
-                        warnings=list(args.get("warnings") or []),
+                        assumptions=normalize_text_list(args.get("assumptions")),
+                        warnings=normalize_text_list(args.get("warnings")),
                     )
                     return {
                         "final": final,
@@ -169,9 +181,26 @@ class SalesAgent:
                     }
 
         logger.warning("model finished without calling submit_answer")
-        text = _text_of(last) if isinstance(last, AIMessage) else ""
+        text = _text_of(last).strip() if isinstance(last, AIMessage) else ""
+
+        if not text:
+            # Observado com qwen3.5:4b: o modelo encerra sem tool call e com
+            # conteúdo vazio, provavelmente deixando tudo no bloco de thinking.
+            # Sem `final`, o `run` levanta AgentLoopError — devolver 200 com
+            # `answer` vazia seria anunciar sucesso sem entregar resposta.
+            logger.warning("model produced neither a tool call nor any text")
+            return {
+                "trace": [
+                    ToolTrace(
+                        name=SUBMIT_ANSWER,
+                        status="error",
+                        error="Model returned an empty response with no tool call.",
+                    )
+                ]
+            }
+
         return {
-            "final": FinalAnswer(answer=text, assumptions=[], warnings=[]),
+            "final": FinalAnswer(answer=text, assumptions=[], warnings=[FALLBACK_WARNING]),
             "trace": [
                 ToolTrace(
                     name=SUBMIT_ANSWER,
@@ -237,18 +266,23 @@ class SalesAgent:
         if final is None:
             raise AgentLoopError("The agent finished without producing an answer.")
 
+        trace = list(state.get("trace", []))
         result = AgentResult(
             answer=final.answer,
             assumptions=final.assumptions,
             warnings=final.warnings,
-            trace=list(state.get("trace", [])),
+            trace=trace,
             turns=int(state.get("turns", 0)),
+            data_queried=any(
+                entry.name == "query_sales_data" and entry.status == "ok" for entry in trace
+            ),
         )
         logger.info(
             "agent run finished",
             extra={
                 "turns": result.turns,
                 "tool_calls": len(result.trace),
+                "data_queried": result.data_queried,
                 "assumptions": len(result.assumptions),
                 "warnings": len(result.warnings),
             },

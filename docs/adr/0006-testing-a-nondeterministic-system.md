@@ -48,16 +48,29 @@ que é exatamente o que o agente usa — daí o `ScriptedChatModel` próprio em
 
 ### 3. Evals — com modelo real
 
-Golden set com as cinco perguntas do enunciado mais casos de comportamento
-(ambiguidade declarada, cautela com causalidade, recusa fora de escopo).
+`evals/golden_questions.yaml` traz as cinco perguntas do enunciado mais três casos
+de comportamento: ambiguidade declarada, armadilha do `promotion_type = 'None'`, e
+recusa fora de escopo.
 
-A asserção primária é sobre o **resultado da ferramenta no trace**, não sobre a
-prosa: o número saiu do DuckDB, e é ali que se verifica. A asserção secundária
-compara o texto com os dígitos normalizados, para confirmar que o modelo narrou o
-número que a consulta devolveu em vez de inventar outro.
+A asserção central **não é sobre a prosa**. O `ToolTrace` guarda o SQL executado,
+então `evals/run_evals.py` extrai esse SQL e o **re-executa contra o mesmo DuckDB**,
+verificando se produz o valor esperado. Uma asserção secundária compara o texto da
+resposta com os dígitos normalizados — o modelo escreve `95.112.506`, `95,112,506`
+ou `95112506` conforme o humor, e comparar strings cruas falharia com o agente
+certo.
 
-Isso separa duas falhas diferentes: *o agente chegou ao dado certo* e *o agente
-narrou o dado certo*.
+Isso separa duas falhas que se confundem num sistema não determinístico:
+
+- **o agente chegou ao dado certo** — o SQL dele, reexecutado, produz o valor;
+- **o agente narrou o dado certo** — o valor aparece na resposta ao usuário.
+
+Um modelo pode acertar a primeira e errar a segunda, inventando um número na
+narração. Uma asserção só sobre texto deixaria isso passar; uma asserção só sobre
+o SQL não perceberia que o usuário recebeu outro número.
+
+O harness também registra `data_queried`, que é o único fato verificável sobre a
+fundamentação da resposta. Ele informa em vez de bloquear: a recusa de uma
+previsão para 2030 legitimamente não consulta nada.
 
 ## Consequências
 
@@ -74,6 +87,10 @@ o número é mais barato, mais rápido e não tem margem de discordância.
 
 ## Estado
 
-As camadas 1 e 2 estão implementadas (100 testes). A camada 3 depende de uma
-credencial de provider, que ainda não existe neste ambiente — ver a seção de
-limitações conhecidas no README.
+As três camadas estão implementadas. As camadas 1 e 2 somam 124 testes que rodam
+sem rede em ~25s. A camada 3 foi executada contra `qwen3.5:4b` servido por Ollama;
+o resultado está na seção de validação do README.
+
+Rodar o golden set custa ~12 minutos, porque cada pergunta leva ~90s num modelo de
+4B — praticamente todo esse tempo é inferência, não consulta: o DuckDB responde em
+milissegundos. É por isso que ele fica fora do `pytest` padrão.

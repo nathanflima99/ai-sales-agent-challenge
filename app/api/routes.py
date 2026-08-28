@@ -77,6 +77,11 @@ def ask(request: Request, payload: AskRequest) -> AskResponse:
             "request_id": request_id_var.get(),
             "turns": result.turns,
             "total_ms": round(total_ms, 2),
+            # Único fato verificável sobre a fundamentação da resposta: houve ao
+            # menos uma consulta bem-sucedida ao dataset. Recusas e perguntas de
+            # escopo legitimamente não consultam, então isto informa em vez de
+            # bloquear.
+            "data_queried": result.data_queried,
             # O trace é o recurso mais útil desta resposta: mostra o SQL exato que
             # o agente escreveu, então qualquer número pode ser reconferido à mão.
             "trace": [entry.model_dump() for entry in result.trace],
