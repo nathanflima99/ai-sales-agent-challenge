@@ -160,6 +160,23 @@ def test_ask_without_api_key_returns_an_actionable_503(client):
     body = response.json()
     assert body["error"]["code"] == "llm_not_configured"
     assert "OPENAI_API_KEY" in body["error"]["message"]
+    assert "LLM_PROVIDER=ollama" in body["error"]["message"]
+
+
+def test_ask_ollama_cloud_without_key_mentions_ollama_api_key(settings_override):
+    settings_override(
+        llm_provider="ollama",
+        llm_model="qwen3.5:397b",
+        ollama_base_url="https://ollama.com",
+    )
+
+    with TestClient(create_app()) as cloud_client:
+        response = cloud_client.post("/ask", json={"question": "Qual produto foi mais vendido?"})
+
+    assert response.status_code == 503
+    message = response.json()["error"]["message"]
+    assert "OLLAMA_API_KEY" in message
+    assert "OPENAI_API_KEY" not in message
 
 
 def test_llm_failure_returns_503_without_a_stack_trace(client):
@@ -196,6 +213,14 @@ def test_ui_is_served_at_the_root(client):
 
     assert response.status_code == 200
     assert "AI Sales Agent" in response.text
+
+
+def test_ui_contains_provider_aware_credential_guidance(client):
+    response = client.get("/")
+
+    assert "OPENAI_API_KEY" in response.text
+    assert "OLLAMA_API_KEY" in response.text
+    assert 'h.provider === "ollama"' in response.text
 
 
 def test_openapi_documents_the_ask_contract():
