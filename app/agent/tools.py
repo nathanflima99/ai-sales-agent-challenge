@@ -11,6 +11,7 @@ execução e vão no system prompt. Gastar uma chamada de tool para devolver tex
 fixo custa latência e tokens sem ganho nenhum.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -40,6 +41,59 @@ class FinalAnswer(BaseModel):
         default_factory=list,
         description="Limitações do dado que afetam a leitura da resposta.",
     )
+
+
+#: Profundidade máxima ao desempacotar JSON aninhado vindo do modelo.
+_MAX_NORMALIZE_DEPTH = 5
+
+
+def normalize_text_list(value: object, _depth: int = 0) -> list[str]:
+    """Converte o que o modelo mandou numa lista de strings utilizáveis.
+
+    Modelos pequenos não respeitam de forma confiável um schema `array of string`.
+    Observado em execução real com `qwen3.5:4b`: uma string JSON no lugar da lista,
+    e um objeto no lugar da lista. Um `list()` direto sobre esses valores produz
+    lixo — a string vira uma lista de caracteres e o dict vira uma lista de chaves.
+
+    Regras:
+    - lista válida: mantém as strings não vazias;
+    - string simples: vira um item único;
+    - string contendo JSON: é parseada e normalizada recursivamente;
+    - dict: normaliza os **valores**, nunca as chaves;
+    - vazios e `None` são descartados.
+    """
+    if value is None or _depth > _MAX_NORMALIZE_DEPTH:
+        return []
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        # Só tenta desempacotar quando parece JSON; sem isso, toda frase comum
+        # pagaria o custo de um parse que vai falhar.
+        looks_like_json = text[0] in "[{" or (len(text) > 1 and text[0] == '"' == text[-1])
+        if looks_like_json:
+            try:
+                return normalize_text_list(json.loads(text), _depth + 1)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return [text]
+
+    if isinstance(value, dict):
+        # As chaves são nomes de campo inventados pelo modelo, não conteúdo.
+        collected: list[str] = []
+        for item in value.values():
+            collected.extend(normalize_text_list(item, _depth + 1))
+        return collected
+
+    if isinstance(value, list | tuple):
+        collected = []
+        for item in value:
+            collected.extend(normalize_text_list(item, _depth + 1))
+        return collected
+
+    text = str(value).strip()
+    return [text] if text else []
 
 
 def build_tools(
@@ -128,8 +182,8 @@ def build_tools(
         """
         final = FinalAnswer(
             answer=answer,
-            assumptions=assumptions or [],
-            warnings=warnings or [],
+            assumptions=normalize_text_list(assumptions),
+            warnings=normalize_text_list(warnings),
         )
         logger.info(
             "final answer submitted",

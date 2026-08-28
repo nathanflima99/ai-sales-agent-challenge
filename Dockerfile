@@ -5,7 +5,12 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # O timeout padrão do pip é 15s por socket. Em rede lenta, o download de um
+    # wheel maior estoura e derruba o build inteiro. 120s com retries torna o
+    # build reproduzível fora de uma conexão rápida.
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 WORKDIR /srv
 

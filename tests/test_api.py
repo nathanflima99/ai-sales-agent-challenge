@@ -35,9 +35,29 @@ def answering_client(client):
                     )
                 ],
                 turns=2,
+                data_queried=True,
             )
 
     client.app.state.agent = StubAgent()
+    return client
+
+
+@pytest.fixture
+def refusing_client(client):
+    """Agente que recusa legitimamente, sem consultar o dataset."""
+
+    class RefusingAgent:
+        def run(self, question: str) -> AgentResult:
+            return AgentResult(
+                answer="O dataset cobre apenas 2012; não é possível projetar 2030.",
+                assumptions=[],
+                warnings=[],
+                trace=[],
+                turns=1,
+                data_queried=False,
+            )
+
+    client.app.state.agent = RefusingAgent()
     return client
 
 
@@ -97,6 +117,25 @@ def test_metadata_reports_turns_and_duration(answering_client):
     assert metadata["turns"] == 2
     assert metadata["total_ms"] >= 0
     assert metadata["request_id"]
+
+
+def test_metadata_reports_that_the_dataset_was_queried(answering_client):
+    metadata = answering_client.post("/ask", json={"question": "Q"}).json()["metadata"]
+
+    assert metadata["data_queried"] is True
+
+
+def test_legitimate_refusal_succeeds_with_data_queried_false(refusing_client):
+    """Recusar uma previsão não exige consultar nada — não pode virar erro.
+
+    O campo informa que não houve consulta; ele não bloqueia a resposta.
+    """
+    response = refusing_client.post("/ask", json={"question": "Previsão para 2030?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["data_queried"] is False
+    assert "2012" in body["answer"]
 
 
 # --- ask: validação -----------------------------------------------------------
