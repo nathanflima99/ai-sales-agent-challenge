@@ -25,7 +25,7 @@ router = APIRouter()
 def health(request: Request) -> HealthResponse:
     """Healthcheck independente do LLM.
 
-    Responde `ok` mesmo sem `OPENAI_API_KEY`; o campo `llm` diz se o `/ask` vai
+    Responde `ok` mesmo sem credencial; o campo `llm` diz se o `/ask` vai
     conseguir funcionar. Isso mantém o container observável e a UI carregável em
     um clone sem credencial.
     """
@@ -58,9 +58,16 @@ def ask(request: Request, payload: AskRequest) -> AskResponse:
     """
     agent: SalesAgent | None = request.app.state.agent
     if agent is None:
+        settings: Settings = request.app.state.settings
+        if settings.llm_provider == "ollama":
+            raise LLMNotConfiguredError(
+                "OLLAMA_API_KEY is not set for Ollama Cloud, so questions cannot be answered. "
+                "Set it in .env or pass it to the container and restart."
+            )
         raise LLMNotConfiguredError(
             "OPENAI_API_KEY is not set, so questions cannot be answered. "
-            "Set it in .env or pass it to the container and restart."
+            "Set it in .env or pass it to the container and restart, or switch to local "
+            "Ollama with LLM_PROVIDER=ollama."
         )
 
     started = time.perf_counter()
