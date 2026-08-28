@@ -1,15 +1,15 @@
 """Construção do modelo de chat.
 
 A abstração de provider vem do próprio LangChain: o resto da aplicação depende de
-`BaseChatModel`, e nunca de uma implementação concreta. Trocar de provider é
-trocar uma variável de ambiente — o `SalesAgent` não muda uma linha.
+`BaseChatModel`, e nunca de uma implementação concreta. Trocar de provider é trocar
+variáveis de ambiente — o `SalesAgent` não muda uma linha.
 
 Dois providers hoje:
 
 - **openai** — exige `OPENAI_API_KEY`.
-- **ollama** — modelo local, sem chave e sem custo por token. Exige um servidor
-  Ollama em execução e um modelo que suporte *tool calling*, porque o agente
-  inteiro depende disso.
+- **ollama** — pode usar servidor local sem chave ou a API hospedada em
+  `https://ollama.com` com `OLLAMA_API_KEY`. O modelo precisa suportar *tool calling*,
+  porque o agente inteiro depende disso.
 """
 
 import logging
@@ -54,7 +54,11 @@ def build_model(settings: Settings) -> BaseChatModel:
 
     logger.info(
         "chat model ready",
-        extra={"provider": provider, "model": settings.resolved_model},
+        extra={
+            "provider": provider,
+            "model": settings.resolved_model,
+            "thinking": settings.ollama_thinking if provider == "ollama" else None,
+        },
     )
     return model
 
@@ -64,7 +68,7 @@ def _build_openai(settings: Settings) -> BaseChatModel:
 
     if settings.openai_api_key is None:
         raise LLMNotConfiguredError(
-            "OPENAI_API_KEY is not set. Set it in .env, or switch to a local model "
+            "OPENAI_API_KEY is not set. Set it in .env, or switch to local Ollama "
             "with LLM_PROVIDER=ollama."
         )
 
@@ -82,12 +86,32 @@ def _build_openai(settings: Settings) -> BaseChatModel:
 def _build_ollama(settings: Settings) -> BaseChatModel:
     from langchain_ollama import ChatOllama
 
+    if settings.ollama_is_direct_cloud and settings.ollama_api_key is None:
+        raise LLMNotConfiguredError(
+            "OLLAMA_API_KEY is required when OLLAMA_BASE_URL points to https://ollama.com."
+        )
+
+    client_kwargs: dict[str, object] = {}
+    if settings.ollama_api_key is not None:
+        client_kwargs["headers"] = {
+            "Authorization": f"Bearer {settings.ollama_api_key.get_secret_value()}"
+        }
+
     logger.info(
-        "using local ollama model",
-        extra={"base_url": settings.ollama_base_url, "hint": TOOL_CALLING_HINT},
+        "using ollama model",
+        extra={
+            "base_url": settings.ollama_base_url,
+            "authenticated": settings.ollama_api_key is not None,
+            "thinking": settings.ollama_thinking,
+            "hint": TOOL_CALLING_HINT,
+        },
     )
     return ChatOllama(
         model=settings.resolved_model,
         base_url=settings.ollama_base_url,
         temperature=0,
+        # langchain-ollama 1.1.0 maps `reasoning=False` to Ollama `think: false`.
+        reasoning=settings.ollama_thinking,
+        # Ollama Cloud expects Authorization: Bearer <OLLAMA_API_KEY>.
+        client_kwargs=client_kwargs,
     )

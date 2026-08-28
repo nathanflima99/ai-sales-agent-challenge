@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,8 +31,14 @@ class Settings(BaseSettings):
     # Só o /ask exige LLM, e falha com 503 explicativo em vez de quebrar no import.
     openai_api_key: SecretStr | None = None
 
-    # Ollama roda local e não usa credencial; basta o servidor estar no ar.
+    # Ollama local não exige credencial. Para acesso direto a https://ollama.com,
+    # a API key é enviada como Authorization: Bearer <key>.
     ollama_base_url: str = "http://localhost:11434"
+    ollama_api_key: SecretStr | None = None
+
+    # Qwen 3.5 suporta reasoning/thinking. No Sales o modo rápido é o padrão:
+    # cálculos ficam no DuckDB e o modelo concentra-se em interpretar e narrar.
+    ollama_thinking: bool = False
 
     dataset_path: Path = Path("dataset/sales.csv")
 
@@ -47,15 +54,14 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    @field_validator("openai_api_key", mode="before")
+    @field_validator("openai_api_key", "ollama_api_key", mode="before")
     @classmethod
     def _blank_key_means_unconfigured(cls, value: object) -> object:
         """Trata chave vazia como ausente.
 
-        `docker compose` com `OPENAI_API_KEY=${OPENAI_API_KEY}` e a variável não
-        definida no host injeta string vazia, não remove a variável. Sem isto o
-        /health anunciaria `configured` e o /ask tentaria chamar o provider com
-        credencial vazia, em vez de devolver o 503 explicativo.
+        `docker compose` com uma variável não definida no host pode injetar string
+        vazia. Sem normalização, health/configuração poderiam anunciar credencial
+        existente mesmo quando não há chave utilizável.
         """
         if isinstance(value, SecretStr):
             value = value.get_secret_value()
@@ -76,15 +82,19 @@ class Settings(BaseSettings):
         return self.llm_model or DEFAULT_MODELS[self.llm_provider]
 
     @property
-    def llm_configured(self) -> bool:
-        """Indica se o `/ask` tem como funcionar.
+    def ollama_is_direct_cloud(self) -> bool:
+        """Indica acesso direto à API autenticada hospedada em ollama.com."""
+        return (urlparse(self.ollama_base_url).hostname or "").lower() == "ollama.com"
 
-        Depende do provider: OpenAI exige credencial, Ollama exige apenas um
-        servidor local — cuja indisponibilidade só aparece na primeira chamada,
-        e vira `LLMError` (503), não um 500 opaco.
+    @property
+    def llm_configured(self) -> bool:
+        """Indica se o `/ask` tem como funcionar com a configuração declarada.
+
+        OpenAI sempre exige credencial. Ollama local pode operar sem chave; acesso
+        direto a ollama.com exige `OLLAMA_API_KEY`.
         """
         if self.llm_provider == "ollama":
-            return True
+            return not self.ollama_is_direct_cloud or self.ollama_api_key is not None
         return self.openai_api_key is not None
 
 
