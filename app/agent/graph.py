@@ -181,7 +181,24 @@ class SalesAgent:
                     }
 
         logger.warning("model finished without calling submit_answer")
-        text = _text_of(last) if isinstance(last, AIMessage) else ""
+        text = _text_of(last).strip() if isinstance(last, AIMessage) else ""
+
+        if not text:
+            # Observado com qwen3.5:4b: o modelo encerra sem tool call e com
+            # conteúdo vazio, provavelmente deixando tudo no bloco de thinking.
+            # Sem `final`, o `run` levanta AgentLoopError — devolver 200 com
+            # `answer` vazia seria anunciar sucesso sem entregar resposta.
+            logger.warning("model produced neither a tool call nor any text")
+            return {
+                "trace": [
+                    ToolTrace(
+                        name=SUBMIT_ANSWER,
+                        status="error",
+                        error="Model returned an empty response with no tool call.",
+                    )
+                ]
+            }
+
         return {
             "final": FinalAnswer(answer=text, assumptions=[], warnings=[FALLBACK_WARNING]),
             "trace": [

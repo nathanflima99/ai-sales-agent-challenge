@@ -158,6 +158,21 @@ def test_prose_answer_without_submit_answer_is_still_delivered(make_agent):
     assert "without calling submit_answer" in (result.trace[-1].error or "")
 
 
+@pytest.mark.parametrize("content", ["", "   ", "\n\n"])
+def test_empty_response_fails_instead_of_returning_a_blank_answer(make_agent, content):
+    """Observado com qwen3.5:4b: sem tool call e sem texto.
+
+    Devolver HTTP 200 com `answer` vazia seria anunciar sucesso sem entregar
+    resposta — pior que falhar, porque o cliente não tem como perceber.
+    """
+    agent = make_agent([AIMessage(content=content)])
+
+    with pytest.raises(AgentLoopError) as exc_info:
+        agent.run("Pergunta")
+
+    assert "without producing an answer" in str(exc_info.value)
+
+
 def test_provider_failure_becomes_a_domain_error(sample_repository):
     profile = build_profile(sample_repository.connection)
     settings = Settings(_env_file=None)

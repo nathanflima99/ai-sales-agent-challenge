@@ -32,16 +32,20 @@ docker run --rm -p 8000:8000 -e OPENAI_API_KEY=sk-... ai-sales-agent
 ### Com Ollama (local, sem chave e sem custo)
 
 ```bash
-ollama pull llama3.1
+ollama pull qwen3.5:4b
 docker run --rm -p 8000:8000 \
   -e LLM_PROVIDER=ollama \
+  -e LLM_MODEL=qwen3.5:4b \
   -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
   ai-sales-agent
 ```
 
-> O modelo Ollama **precisa suportar tool calling** — `llama3.1`, `qwen2.5` ou
-> `mistral-nemo`. Um modelo sem esse suporte nunca chama a ferramenta de consulta,
-> então nunca toca o dataset e não tem como responder.
+> O modelo Ollama **precisa suportar tool calling**. Um modelo sem esse suporte
+> nunca chama a ferramenta de consulta, então nunca toca o dataset e não tem como
+> responder. Confira antes com `ollama show <modelo>`: a capacidade `tools`
+> precisa estar listada. `gemma3:4b`, por exemplo, **não** a tem.
+>
+> Validado com `qwen3.5:4b` — ver [Validação com modelo real](#validação-com-modelo-real).
 
 ---
 
@@ -161,26 +165,31 @@ Documentação interativa gerada pelo FastAPI em <http://localhost:8000/docs>.
 
 ### Formato da resposta
 
+Trace real, capturado de uma execução contra `qwen3.5:4b` via Ollama:
+
 ```json
 {
-  "answer": "O produto mais vendido foi o Product_1359, com 95.112.506 unidades.",
-  "assumptions": [
-    "'mais vendido' interpretado como soma de actual_quantity, não faturamento"
+  "answer": "O produto mais vendido foi o **Product_1359**, que teve um total de **95.112.506** unidades vendidas no período analisado (de 2012-01-01 a 2012-12-31).\n\nO segundo produto mais vendido foi o Product_1248, com 53.245.741 unidades, e o terceiro lugar ficou para o Product_1341, com 44.709.999 unidades vendidas.",
+  "assumptions": ["A métrica utilizada foi a quantidade total vendida (SUM(actual_quantity)). Se o interesse fosse faturamento, seria SUM(actual_quantity * actual_price), o que resultaria numa ordem diferente."],
+  "warnings": [
+    "O dataset cobre apenas um ano inteiro de vendas (2012).",
+    "Foram analisadas 203.635 linhas do dataset."
   ],
-  "warnings": [],
   "metadata": {
-    "request_id": "7cf411e07dde453e",
+    "request_id": "6e9b00ccbcea4c78",
     "turns": 2,
-    "total_ms": 3184.7,
+    "total_ms": 79840.89,
+    "data_queried": true,
     "trace": [
       {
         "name": "query_sales_data",
-        "args": { "sql": "SELECT product_id, SUM(actual_quantity) AS total FROM sales GROUP BY product_id ORDER BY total DESC LIMIT 1" },
+        "args": { "sql": "SELECT product_id, SUM(actual_quantity) as total_sold FROM sales GROUP BY product_id ORDER BY total_sold DESC LIMIT 10" },
         "status": "ok",
-        "elapsed_ms": 41.2,
-        "sql": "SELECT product_id, SUM(actual_quantity) AS total FROM sales GROUP BY product_id ORDER BY total DESC LIMIT 100",
-        "row_count": 1,
-        "cache_hit": false
+        "elapsed_ms": 249.31,
+        "sql": "SELECT product_id, SUM(actual_quantity) AS total_sold FROM sales GROUP BY product_id ORDER BY total_sold DESC LIMIT 10",
+        "row_count": 10,
+        "cache_hit": false,
+        "error": null
       },
       { "name": "submit_answer", "status": "ok" }
     ]
@@ -189,11 +198,26 @@ Documentação interativa gerada pelo FastAPI em <http://localhost:8000/docs>.
 ```
 
 O `trace` é o recurso mais útil da resposta: ele mostra o **SQL exato** que o
-agente escreveu, então qualquer número pode ser reconferido à mão. Note que o
-`sql` registrado é o pós-guard — com o `LIMIT` já injetado.
+agente escreveu, então qualquer número pode ser reconferido à mão. O campo `sql`
+é o pós-guard, com o `LIMIT` já aplicado.
 
-> ⚠️ O JSON acima ilustra o **formato**. Um trace capturado de uma execução real
-> ainda não foi incluído — ver [Limitações conhecidas](#limitações-conhecidas).
+`data_queried` é o único fato verificável sobre a fundamentação da resposta: ele é
+verdadeiro somente quando existe um `query_sales_data` com status `ok` no trace.
+Ele **informa em vez de bloquear** — uma recusa legítima ("qual a previsão para
+2030?") não precisa consultar nada e responde com `data_queried: false`.
+
+### O que este trace revela sobre modelos pequenos
+
+Nesta execução o modelo enviou `assumptions` como uma **string contendo JSON
+malformado** e `warnings` como um **objeto**, em vez das listas que o schema pede.
+O JSON acima mostra o resultado já normalizado.
+
+Sem tratamento, um `list()` sobre esses valores produziria uma lista de caracteres
+e uma lista de chaves — foi exatamente o que aconteceu na primeira execução real,
+com cerca de 200 itens de um caractere na resposta da API. `normalize_text_list`
+existe por causa disso, e a normalização precisa acontecer no grafo, não na
+ferramenta: o LangChain valida os argumentos contra o schema Pydantic antes de
+executar o corpo da tool, mas o nó que encerra o grafo lê os `tool_calls` crus.
 
 ---
 
@@ -297,19 +321,48 @@ medida, para não tomar esse atalho.
 
 ---
 
+## Validação com modelo real
+
+Executado ponta a ponta contra **`qwen3.5:4b`** (4.7B, Q4_K_M) servido por Ollama
+0.32.6 num servidor remoto, alcançado por túnel SSH — sem expor a porta 11434 na
+rede.
+
+| # | Pergunta | Esperado | Resultado |
+|---|---|---|---|
+| 1 | Qual produto foi mais vendido? | `Product_1359` / 95.112.506 | ✅ (3 repetições, SQL idêntico) |
+| 2 | Qual local teve maior volume? | `Whse_J` / 617.421.620 | ✅ |
+| 3 | Quantidade total realizada | 953.555.461 | ✅ |
+| 4 | Quantidade total planejada | 949.259.991 | ✅ |
+| 5 | Diferença planejado × realizado | 4.295.470 | ✅ com o sentido explicado |
+| 6 | Impacto das promoções | −20% no preço, causalidade recusada | ✅ |
+
+Todas as respostas passaram por SQL real no DuckDB. Em duas sondas adicionais o
+agente **consultou o dataset mesmo para um fato presente no system prompt**, e
+recusou corretamente uma previsão para 2030 sem inventar números.
+
+**Latência: 55 a 143 s por pergunta**, média ~90 s. Dominada pelo *thinking* do
+modelo, não pelo dado — as consultas ao DuckDB levaram entre 1,8 e 332 ms.
+
+**Docker validado**: `docker build` bem-sucedido, container sobe como usuário
+não-root, `HEALTHCHECK` reporta `healthy`, e `/ask` respondeu o ground truth de
+dentro do container alcançando o túnel via `host.docker.internal`.
+
+### O que o modelo de 4B não faz bem
+
+- **Não respeita o schema de tipos** nos argumentos de ferramenta: manda string ou
+  objeto onde o contrato pede lista. Tratado por `normalize_text_list`.
+- **Ignora a ferramenta de saída em ~30% das execuções**, respondendo em prosa. A
+  resposta é preservada e um `warning` explícito é acrescentado.
+- **Raramente devolve resposta vazia** (1 em ~16 execuções): sem tool call e sem
+  texto. Nesse caso a requisição falha de forma controlada em vez de devolver
+  HTTP 200 com `answer` em branco.
+
+Nenhuma dessas limitações afetou a correção dos números, porque quem calcula é o
+DuckDB. Um modelo maior reduziria os dois primeiros itens; a arquitetura não muda.
+
+---
+
 ## Limitações conhecidas
-
-**O caminho feliz completo não foi executado contra um provider real.** Não havia
-credencial de LLM disponível no ambiente de desenvolvimento. Todo o agente foi
-validado com um modelo falso que exercita o grafo, e toda a camada analítica com
-SQL determinístico — mas nenhuma chamada real a OpenAI ou Ollama aconteceu.
-Consequências: o trace de exemplo acima ilustra o formato em vez de ser capturado,
-e os evals ainda não têm resultado.
-
-**A imagem Docker não foi construída.** Docker não estava instalado na máquina de
-desenvolvimento. O `Dockerfile` foi escrito com cuidado e a etapa de maior risco
-— a construção do wheel com pacote stub, que permite cachear as dependências —
-foi validada localmente com `pip`, mas o build completo não rodou.
 
 **Evals ainda não implementados.** O desenho está no
 [ADR 0006](docs/adr/0006-testing-a-nondeterministic-system.md): golden set com as
@@ -328,8 +381,9 @@ conhecimento do negócio que o dataset não carrega.
 
 ## Próximos passos
 
-1. Rodar o golden set contra um provider real e publicar a taxa de acerto aqui
-2. Construir e publicar a imagem Docker
+1. Automatizar o golden set como harness reproduzível (`evals/`), hoje executado
+   manualmente — ver [ADR 0006](docs/adr/0006-testing-a-nondeterministic-system.md)
+2. Comparar `qwen3.5:4b` com um modelo maior medindo a regressão, em vez de opinar
 3. CI no GitHub Actions com `ruff`, `mypy` e `pytest`
 4. Conversas multi-turno com `MemorySaver`
 5. Streaming via `astream_events`, mostrando o agente raciocinando
