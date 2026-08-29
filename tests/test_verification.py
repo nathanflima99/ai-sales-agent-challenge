@@ -48,6 +48,32 @@ def test_the_sign_is_part_of_the_claim():
     assert check("A diferença é de -4.295.470 unidades.", results) == []
 
 
+def test_restating_the_magnitude_of_a_signed_result_is_allowed():
+    """Caso real, encontrado testando a aplicação à mão.
+
+    O banco devolveu `SUM(planned - actual) = -4295470`, e a resposta disse "a
+    diferença foi de -4.295.470" e, na frase seguinte, "superação de 4.295.470
+    unidades". O positivo é reformulação do negativo, não alegação nova.
+    """
+    results = numbers_in_payload({"rows": [{"diferenca": -4295470}]})
+    resposta = (
+        "A diferença foi de -4.295.470 unidades. Houve superação da meta em 4.295.470 unidades."
+    )
+
+    assert check(resposta, results) == []
+
+
+def test_the_magnitude_alone_is_still_rejected():
+    """A proteção contra inversão de sinal continua de pé.
+
+    Se a resposta cita só o positivo, sem mostrar o negativo que veio do banco,
+    é exatamente o erro que a trava existe para pegar.
+    """
+    results = numbers_in_payload({"rows": [{"diferenca": -4295470}]})
+
+    assert check("Houve superação da meta em 4.295.470 unidades.", results) == ["4295470"]
+
+
 def test_the_same_answer_passes_when_the_database_did_the_subtraction():
     results = numbers_in_payload({"rows": [{"diferenca": 4295470}]})
 

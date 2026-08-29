@@ -188,6 +188,22 @@ def mask_dates(text: str) -> str:
     return _DATE_SHAPED.sub(replace, text or "")
 
 
+def _is_restated_magnitude(candidate: str, claimed: set[str], result_numbers: set[str]) -> bool:
+    """Aceita a magnitude de um valor com sinal que a resposta ja apresentou.
+
+    Caso real: o banco devolveu `SUM(planned - actual) = -4295470`, e a resposta
+    disse "a diferenca foi de -4.295.470" e, na frase seguinte, "superacao de
+    4.295.470 unidades". O positivo nao esta na evidencia, mas nao e alegacao
+    nova - e reformulacao do negativo, que esta.
+
+    A condicao e estreita de proposito: o valor com o sinal oposto precisa
+    aparecer **na propria resposta** e ter vindo de consulta. Se so o positivo
+    aparecesse, continuaria reprovado, que e a protecao contra inversao de sinal.
+    """
+    opposite = candidate[1:] if candidate.startswith("-") else f"-{candidate}"
+    return opposite in claimed and opposite in result_numbers
+
+
 def unverified_numbers(
     claims: str,
     question: str,
@@ -213,9 +229,10 @@ def unverified_numbers(
     - arredondamentos de um valor que veio de consulta.
     """
     allowed = numbers_in(question) | (context_numbers or set())
+    claimed = numbers_in(mask_dates(claims))
     unverified: list[str] = []
 
-    for candidate in sorted(numbers_in(mask_dates(claims)), key=len, reverse=True):
+    for candidate in sorted(claimed, key=len, reverse=True):
         digits = candidate.lstrip("-")
         if len(digits) < MIN_DIGITS:
             continue
@@ -224,6 +241,8 @@ def unverified_numbers(
         if len(digits) == 4 and int(digits) in YEAR_RANGE:
             continue
         if _is_rounding_of(candidate, result_numbers):
+            continue
+        if _is_restated_magnitude(candidate, claimed, result_numbers):
             continue
         unverified.append(candidate)
 
