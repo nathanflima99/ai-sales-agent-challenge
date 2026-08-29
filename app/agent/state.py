@@ -47,3 +47,8 @@ class AgentState(TypedDict):
     #: dígitos. É contra este conjunto que a resposta final é verificada: um
     #: número que não está aqui não veio do banco, veio da cabeça do modelo.
     result_numbers: Annotated[list[str], operator.add]
+
+    #: Falso quando a resposta cita algum número que nenhuma consulta devolveu e
+    #: a cota de turnos acabou antes de o modelo corrigir. Sobe para o metadata
+    #: da API: permite ao cliente decidir sem interpretar o texto do aviso.
+    numbers_verified: bool

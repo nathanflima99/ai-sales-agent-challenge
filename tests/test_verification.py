@@ -33,7 +33,19 @@ def test_arithmetic_done_by_the_model_is_caught():
         results,
     )
 
-    assert unverified == ["4305470"]
+    assert unverified == ["-4305470"]
+
+
+def test_the_sign_is_part_of_the_claim():
+    """Um resultado negativo não autoriza a alegação positiva.
+
+    Sem isto, um `-4295470` vindo do banco validaria a resposta `4295470` — que
+    é exatamente a inversão de sinal que motivou a trava.
+    """
+    results = numbers_in_payload({"rows": [{"diferenca": -4295470}]})
+
+    assert check("A diferença é de 4.295.470 unidades.", results) == ["4295470"]
+    assert check("A diferença é de -4.295.470 unidades.", results) == []
 
 
 def test_the_same_answer_passes_when_the_database_did_the_subtraction():
@@ -78,9 +90,47 @@ def test_numbers_from_the_question_are_allowed():
     assert unverified == []
 
 
-def test_short_numbers_are_ignored():
-    """Contagens pequenas e percentuais geram ruído sem carregar risco."""
-    assert check("Foram 12 promoções, 2 produtos, alta de 20%.", set()) == []
+def test_single_digits_are_ignored():
+    """Marcadores de lista e contagens de um dígito geram ruído constante."""
+    assert check("Foram 2 produtos, os 3 primeiros, 1 ano.", set()) == []
+
+
+def test_two_digit_claims_are_verified():
+    """`12 promoções` e `20%` são fatos centrais deste dataset.
+
+    Isentá-los por serem curtos deixaria o modelo inventar exatamente as métricas
+    que mais importam aqui.
+    """
+    assert sorted(check("Foram 13 promoções com 25% de desconto.", set())) == ["13", "25"]
+
+    results = numbers_in_payload({"rows": [{"n": 12}]})
+    assert check("Foram 12 promoções.", results) == []
+
+
+def test_sql_text_is_not_evidence():
+    """A consulta é escrita pelo modelo; aceitá-la o deixaria se autorizar.
+
+    Sem excluir o SQL do payload, um `WHERE actual_quantity > 9876` validaria a
+    alegação de que o total é 9876.
+    """
+    payload = {
+        "sql": "SELECT SUM(actual_quantity) FROM sales WHERE actual_quantity > 9876",
+        "rows": [{"total": 33978}],
+    }
+
+    results = numbers_in_payload(payload)
+
+    assert "9876" not in results
+    assert check("O total foi 9876.", results) == ["9876"]
+    assert check("O total foi 33978.", results) == []
+
+
+def test_claims_cover_assumptions_and_warnings():
+    """Premissas e ressalvas também aparecem na resposta da API."""
+    results = numbers_in_payload({"rows": [{"total": 33978}]})
+    claims = "\n".join(["O total foi 33978.", "Considerei 10000 registros."])
+
+    assert check(claims, results) == ["10000"]
 
 
 def test_float_results_match_their_narration():

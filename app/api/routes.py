@@ -89,6 +89,9 @@ def ask(request: Request, payload: AskRequest) -> AskResponse:
             # escopo legitimamente não consultam, então isto informa em vez de
             # bloquear.
             "data_queried": result.data_queried,
+            # Falso quando a resposta cita número que nenhuma consulta devolveu.
+            # Machine-readable de propósito: o cliente decide sem ler o aviso.
+            "numbers_verified": result.numbers_verified,
             # O trace é o recurso mais útil desta resposta: mostra o SQL exato que
             # o agente escreveu, então qualquer número pode ser reconferido à mão.
             "trace": [entry.model_dump() for entry in result.trace],

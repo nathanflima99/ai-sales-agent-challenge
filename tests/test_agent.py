@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage
 
 from app.agent.graph import EMPTY_RESPONSE_NUDGE, FALLBACK_WARNING, SalesAgent
 from app.agent.prompts import build_system_prompt
-from app.agent.tools import build_tools
+from app.agent.tools import SUBMIT_ANSWER, build_tools
 from app.analytics.profiling import build_profile
 from app.config import Settings
 from app.errors import AgentLoopError, LLMError
@@ -47,7 +47,7 @@ def test_single_query_then_answer(make_agent):
 
     assert result.answer == "O total realizado foi 33978."
     assert result.turns == 2
-    assert [t.name for t in result.trace] == ["query_sales_data", "submit_answer"]
+    assert [t.name for t in result.trace] == ["query_sales_data", "submit_answer", "number_check"]
     assert result.trace[0].status == "ok"
     # O SQL executado fica visível no trace: é o que torna a resposta auditável.
     assert "SUM(ACTUAL_QUANTITY)" in (result.trace[0].sql or "").upper()
@@ -94,7 +94,7 @@ def test_agent_recovers_from_a_rejected_query(make_agent):
     result = agent.run("Qual o total?")
 
     assert result.answer == "Consegui na segunda tentativa."
-    assert [t.status for t in result.trace] == ["error", "ok", "ok"]
+    assert [t.status for t in result.trace] == ["error", "ok", "ok", "ok"]
     assert "DROP" in (result.trace[0].error or "").upper()
 
 
@@ -154,8 +154,8 @@ def test_prose_answer_without_submit_answer_is_still_delivered(make_agent):
     result = agent.run("Pergunta")
 
     assert result.answer == "A resposta em prosa, sem chamar a tool."
-    assert result.trace[-1].status == "error"
-    assert "without calling submit_answer" in (result.trace[-1].error or "")
+    assert any(t.name == SUBMIT_ANSWER and t.status == "error" for t in result.trace)
+    assert any("without calling submit_answer" in (t.error or "") for t in result.trace)
 
 
 @pytest.mark.parametrize("content", ["", "   ", "\n\n"])
@@ -310,7 +310,7 @@ def test_fallback_after_a_successful_query_is_flagged_but_kept(make_agent):
     assert result.data_queried is True
     assert result.answer == "O total realizado foi 33978."
     assert FALLBACK_WARNING in result.warnings
-    assert result.trace[-1].status == "error"
+    assert any(t.name == SUBMIT_ANSWER and t.status == "error" for t in result.trace)
 
 
 def test_malformed_submit_answer_arguments_are_normalized(make_agent):
