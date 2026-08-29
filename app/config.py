@@ -36,9 +36,17 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_api_key: SecretStr | None = None
 
-    # Qwen 3.5 suporta reasoning/thinking. No Sales o modo rápido é o padrão:
-    # cálculos ficam no DuckDB e o modelo concentra-se em interpretar e narrar.
-    ollama_thinking: bool = False
+    # Qwen 3.5 suporta reasoning/thinking, e aqui ele fica LIGADO por padrão.
+    #
+    # A intuição diz o contrário — o cálculo é do DuckDB, então o modelo só
+    # precisaria narrar. O golden set mediu e desmentiu: com `qwen3.5:4b`,
+    # desligar leva a taxa de acerto de 8/8 para 3/8, enquanto o tempo médio cai
+    # de 122s para 53s. O SQL continua correto; o que degrada é justamente
+    # interpretar e narrar. Num caso o modelo obteve os dois totais certos e
+    # errou a subtração na resposta.
+    #
+    # Desligue apenas quando latência valer mais que corretude, cientes do custo.
+    ollama_thinking: bool = True
 
     dataset_path: Path = Path("dataset/sales.csv")
 

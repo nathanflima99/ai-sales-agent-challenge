@@ -18,7 +18,7 @@ services:
       # a chave e obrigatoria e precisa chegar ao container.
       OLLAMA_API_KEY: "${OLLAMA_API_KEY:-}"
       # Mantem no Compose o mesmo default do Settings/provider.
-      OLLAMA_THINKING: "${OLLAMA_THINKING:-false}"
+      OLLAMA_THINKING: "${OLLAMA_THINKING:-true}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
     extra_hosts:
       # Necessario no Linux; no Docker Desktop ja existe por padrao.

@@ -185,10 +185,20 @@ class SalesAgent:
 
         if not text:
             # Observado com qwen3.5:4b: o modelo encerra sem tool call e com
-            # conteúdo vazio, provavelmente deixando tudo no bloco de thinking.
-            # Sem `final`, o `run` levanta AgentLoopError — devolver 200 com
-            # `answer` vazia seria anunciar sucesso sem entregar resposta.
-            logger.warning("model produced neither a tool call nor any text")
+            # conteúdo vazio. Sem `final`, o `run` levanta AgentLoopError —
+            # devolver 200 com `answer` vazia seria anunciar sucesso sem entregar
+            # resposta.
+            #
+            # O tamanho do bloco de raciocínio vai no log porque foi a pista que
+            # explicou o caso: com `reasoning=True`, o langchain-ollama separa o
+            # raciocínio do conteúdo, ele infla o histórico a cada turno, e o
+            # modelo acaba respondendo vazio. Sem este campo, o erro diz apenas
+            # "sem resposta" e a causa exige uma investigação inteira.
+            reasoning = (last.additional_kwargs or {}).get("reasoning_content", "")
+            logger.warning(
+                "model produced neither a tool call nor any text",
+                extra={"reasoning_chars": len(str(reasoning))},
+            )
             return {
                 "trace": [
                     ToolTrace(

@@ -8,14 +8,48 @@ from app.agent.model import BearerAuth, build_model
 from app.config import Settings
 
 
-def test_ollama_defaults_to_thinking_disabled() -> None:
+def test_ollama_defaults_to_thinking_enabled() -> None:
+    """O padrão é ligado porque o golden set mediu o custo de desligar.
+
+    Com `qwen3.5:4b`, desligar levou a taxa de acerto de 8/8 para 3/8 — o SQL
+    continuou correto, mas a narração degradou a ponto de o modelo errar uma
+    subtração cujos dois operandos ele já tinha obtido do DuckDB.
+    """
     settings = Settings(_env_file=None, llm_provider="ollama")
 
     model = build_model(settings)
 
     assert isinstance(model, ChatOllama)
-    assert settings.ollama_thinking is False
+    assert settings.ollama_thinking is True
+    # `None` é o default do campo: o parâmetro `think` não é enviado e o Ollama
+    # usa o comportamento nativo do modelo. Ver o teste logo abaixo.
+    assert model.reasoning is None
+
+
+def test_thinking_can_be_disabled_for_latency() -> None:
+    settings = Settings(_env_file=None, llm_provider="ollama", ollama_thinking=False)
+
+    model = build_model(settings)
+
     assert model.reasoning is False
+
+
+def test_thinking_enabled_does_not_send_the_reasoning_flag() -> None:
+    """Ligado significa *não passar* o parâmetro, e a diferença é medida.
+
+    `reasoning=True` não apenas liga o raciocínio: ele faz o langchain-ollama
+    separar o raciocínio num campo próprio, que incha o histórico a cada turno.
+    Com `qwen3.5:4b`, uma pergunta de uma frase gerou 22.190 caracteres de
+    `reasoning_content`, e o golden set caiu de 8/8 (parâmetro ausente) para 5/8,
+    com as três falhas sendo respostas vazias.
+
+    Sem o parâmetro, o Ollama usa o comportamento nativo do modelo.
+    """
+    settings = Settings(_env_file=None, llm_provider="ollama", ollama_thinking=True)
+
+    model = build_model(settings)
+
+    assert model.reasoning is None
 
 
 def test_ollama_cloud_sends_bearer_api_key() -> None:
