@@ -37,7 +37,6 @@ docker run --rm -p 8000:8000 \
   -e LLM_PROVIDER=ollama \
   -e LLM_MODEL=qwen3.5:4b \
   -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
-  -e OLLAMA_THINKING=false \
   ai-sales-agent
 ```
 
@@ -51,7 +50,6 @@ LLM_PROVIDER=ollama
 LLM_MODEL=qwen3.5:397b
 OLLAMA_BASE_URL=https://ollama.com
 OLLAMA_API_KEY=sua-chave-aqui
-OLLAMA_THINKING=false
 ```
 
 Depois suba a aplicação normalmente:
@@ -68,7 +66,6 @@ docker run --rm -p 8000:8000 \
   -e LLM_MODEL=qwen3.5:397b \
   -e OLLAMA_BASE_URL=https://ollama.com \
   -e OLLAMA_API_KEY="$OLLAMA_API_KEY" \
-  -e OLLAMA_THINKING=false \
   ai-sales-agent
 ```
 
@@ -90,19 +87,45 @@ um Qwen 3.5 disponível para a conta.
 
 ### Thinking / reasoning
 
-O Sales usa `OLLAMA_THINKING=false` por padrão. Em `langchain-ollama==1.1.0`, isso
-é enviado ao Ollama através de `ChatOllama(reasoning=False)`, equivalente a
-`think: false` na API do Ollama.
+O Sales usa `OLLAMA_THINKING=true` por padrão. Em `langchain-ollama==1.1.0`, o
+valor é enviado ao Ollama como `ChatOllama(reasoning=...)`, equivalente a `think`
+na API do Ollama.
 
-A motivação é latência: o agente já delega cálculo ao DuckDB e usa o LLM para
-planejar consultas, interpretar e narrar. Para fazer um benchmark A/B, basta trocar:
+O padrão foi decidido por medição, não por intuição — e a intuição estava errada.
+
+O raciocínio inicial era desligar: o cálculo é do DuckDB, então o modelo só
+precisaria narrar, e desligar economizaria latência. O golden set foi executado
+nos dois modos, mesma máquina, mesmo modelo, mesmo prompt:
+
+| | `true` | `false` |
+|---|---|---|
+| Taxa de acerto | **8/8** | **3/8** |
+| Tempo médio | 122 s | **53 s** |
+
+A latência de fato cai 57%. Mas a taxa de acerto desaba, e o padrão das falhas
+contradiz a premissa: **o SQL continuou correto em todos os casos**. O que degrada
+é justamente interpretar e narrar.
+
+O caso mais ilustrativo foi a diferença entre planejado e realizado. Sem thinking,
+o modelo pediu ao DuckDB os dois totais, recebeu 949.259.991 e 953.555.461
+corretamente — e então fez a subtração de cabeça, respondendo **−4.305.470** em
+vez de 4.295.470. Errou o valor e o sinal, enquanto o próprio texto afirmava
+corretamente que se vendeu mais do que o planejado.
+
+Outras falhas do modo desligado: consultar os dados e não citar o número obtido,
+não preencher `assumptions` numa pergunta ambígua, e uma vez responder sobre
+promoções **sem consultar o dataset** (`data_queried: false`).
+
+Para desligar conscientemente, quando latência valer mais que corretude:
 
 ```env
-OLLAMA_THINKING=true
+OLLAMA_THINKING=false
 ```
 
-Não altere prompts ou golden set ao comparar os modos; assim a única variável do
-experimento continua sendo thinking ligado/desligado.
+Ao repetir o experimento, não altere prompts nem golden set — assim a única
+variável continua sendo thinking ligado/desligado. E rode mais de uma vez por
+modo: os números acima são de uma execução de cada lado, o que basta para uma
+diferença desse tamanho, mas não para distinções sutis.
 
 ---
 
@@ -191,7 +214,7 @@ Os padrões estão em `.env.example`.
 | `OPENAI_API_KEY` | — | Exigida quando o provider é `openai` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Host local, remoto ou `https://ollama.com` |
 | `OLLAMA_API_KEY` | — | Opcional localmente; obrigatória para acesso direto a `ollama.com` |
-| `OLLAMA_THINKING` | `false` | Ativa/desativa reasoning/thinking do Ollama |
+| `OLLAMA_THINKING` | `true` | Reasoning do Ollama. Desligar troca corretude por latência — ver [Thinking / reasoning](#thinking--reasoning) |
 | `DATASET_PATH` | `dataset/sales.csv` | |
 | `MAX_QUERY_ROWS` | `100` | Teto de linhas por consulta |
 | `MAX_AGENT_TURNS` | `6` | Cota de turnos do agente |

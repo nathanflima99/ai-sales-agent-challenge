@@ -125,12 +125,33 @@ def _build_ollama(settings: Settings) -> BaseChatModel:
     if settings.ollama_api_key is not None:
         client_kwargs["auth"] = BearerAuth(settings.ollama_api_key)
 
+    # `reasoning` tem três estados no langchain-ollama, e eles NÃO são apenas
+    # ligado/desligado:
+    #
+    #   False     -> envia `think: false`. O modelo não raciocina.
+    #   True      -> envia `think: true` E separa o raciocínio num campo próprio,
+    #                `additional_kwargs["reasoning_content"]`.
+    #   ausente   -> o Ollama usa o comportamento nativo do modelo, com o
+    #                raciocínio inline no conteúdo.
+    #
+    # Passar `True` parece o caminho óbvio para "ligar o thinking" e é o pior dos
+    # três aqui. Medido com `qwen3.5:4b`: uma pergunta de uma frase gerou 22.190
+    # caracteres de `reasoning_content`. Num agente, cada turno acumula esse bloco
+    # no histórico, e a partir do terceiro ou quarto o modelo passa a devolver
+    # conteúdo vazio. O golden set caiu de 8/8 (ausente) para 5/8 (`True`), com as
+    # três falhas sendo exatamente respostas vazias.
+    #
+    # Por isso "ligado" aqui é `None`, que é o default do campo e equivale a não
+    # passar nada.
+    reasoning = None if settings.ollama_thinking else False
+
     logger.info(
         "using ollama model",
         extra={
             "base_url": settings.ollama_base_url,
             "authenticated": settings.ollama_api_key is not None,
             "thinking": settings.ollama_thinking,
+            "reasoning_param": reasoning,
             "hint": TOOL_CALLING_HINT,
         },
     )
@@ -138,8 +159,7 @@ def _build_ollama(settings: Settings) -> BaseChatModel:
         model=settings.resolved_model,
         base_url=settings.ollama_base_url,
         temperature=0,
-        # langchain-ollama 1.1.0 maps `reasoning=False` to Ollama `think: false`.
-        reasoning=settings.ollama_thinking,
+        reasoning=reasoning,
         # Ollama Cloud expects Authorization: Bearer <OLLAMA_API_KEY>.
         client_kwargs=client_kwargs,
     )

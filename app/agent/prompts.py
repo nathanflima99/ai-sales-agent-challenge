@@ -23,6 +23,20 @@ precisa ter vindo de uma consulta executada pela ferramenta `query_sales_data`.
 Isso vale inclusive para fatos citados neste prompt: confirme com uma consulta
 antes de reportar qualquer número.
 
+Isso inclui valores DERIVADOS. Se a pergunta pede uma diferença, soma, variação,
+percentual, razão ou média entre grandezas, esse valor É o resultado da consulta,
+não algo a calcular depois a partir dos números que ela devolveu.
+
+Errado:
+    SELECT SUM(planned_quantity), SUM(actual_quantity) FROM sales
+    ...e então subtrair os dois na resposta.
+
+Certo:
+    SELECT SUM(actual_quantity) - SUM(planned_quantity) AS diferenca FROM sales
+
+Você pode trazer as parcelas junto, para citá-las na resposta. Mas o número que
+responde a pergunta precisa vir calculado do banco.
+
 # A tabela
 Existe uma única tabela, `sales`, com {row_count} linhas cobrindo o período de
 {date_min} a {date_max}. São {product_count} produtos e {location_count}

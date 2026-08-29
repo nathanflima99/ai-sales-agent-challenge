@@ -24,6 +24,7 @@ from langgraph.graph import END, StateGraph
 from app.agent.prompts import build_system_prompt
 from app.agent.state import AgentState, ToolTrace
 from app.agent.tools import SUBMIT_ANSWER, FinalAnswer, normalize_text_list
+from app.agent.verification import correction_message, numbers_in_payload, unverified_numbers
 from app.analytics.profiling import DatasetProfile
 from app.config import Settings
 from app.errors import AgentLoopError, AppError, LLMError
@@ -31,6 +32,12 @@ from app.errors import AgentLoopError, AppError, LLMError
 logger = logging.getLogger(__name__)
 
 _RETRY_HINT = "Fix the problem described above and call the tool again."
+
+#: Enviado quando o modelo devolve uma mensagem completamente vazia.
+EMPTY_RESPONSE_NUDGE = (
+    "Your last message was empty. Please continue: either call a tool to query "
+    "the dataset, or call submit_answer with your final response."
+)
 
 #: Registrado em `warnings` quando o modelo encerra em prosa, sem a tool de saída.
 #: A informação existia só no trace; aqui ela chega a quem lê apenas a resposta.
@@ -52,6 +59,10 @@ class AgentResult:
     #: Nomeado pelo que conseguimos provar: que o dataset foi consultado. Não
     #: afirma que a resposta está correta, nem que usou o resultado da consulta.
     data_queried: bool = False
+
+    #: Falso quando algum número apresentado ao usuário não foi encontrado em
+    #: nenhum resultado de consulta e a cota de turnos acabou antes da correção.
+    numbers_verified: bool = True
 
 
 class SalesAgent:
@@ -101,6 +112,7 @@ class SalesAgent:
 
         messages: list[BaseMessage] = []
         traces: list[ToolTrace] = []
+        seen_numbers: list[str] = []
 
         for call in last.tool_calls:
             name = call["name"]
@@ -151,9 +163,12 @@ class SalesAgent:
                     cache_hit=payload.get("cache_hit"),
                 )
             )
+            # Guardar os números que a consulta devolveu é o que permite, no fim,
+            # verificar se a resposta citou apenas valores rastreáveis.
+            seen_numbers.extend(numbers_in_payload(payload))
             messages.append(ToolMessage(content=str(payload), tool_call_id=call_id))
 
-        return {"messages": messages, "trace": traces}
+        return {"messages": messages, "trace": traces, "result_numbers": seen_numbers}
 
     def _finish_node(self, state: AgentState) -> dict[str, Any]:
         """Extrai a resposta final.
@@ -175,19 +190,21 @@ class SalesAgent:
                         assumptions=normalize_text_list(args.get("assumptions")),
                         warnings=normalize_text_list(args.get("warnings")),
                     )
-                    return {
-                        "final": final,
-                        "trace": [ToolTrace(name=SUBMIT_ANSWER, args=args, status="ok")],
-                    }
+                    verified = self._verify(state, final, args, call.get("id"))
+                    verified["trace"] = [
+                        ToolTrace(name=SUBMIT_ANSWER, args=args, status="ok"),
+                        *verified.get("trace", []),
+                    ]
+                    return verified
 
         logger.warning("model finished without calling submit_answer")
         text = _text_of(last).strip() if isinstance(last, AIMessage) else ""
 
         if not text:
-            # Observado com qwen3.5:4b: o modelo encerra sem tool call e com
-            # conteúdo vazio, provavelmente deixando tudo no bloco de thinking.
-            # Sem `final`, o `run` levanta AgentLoopError — devolver 200 com
-            # `answer` vazia seria anunciar sucesso sem entregar resposta.
+            # Só chega aqui quando a cota de turnos acabou antes de o modelo
+            # produzir qualquer coisa: o caminho normal para resposta vazia é o
+            # nó `recover`, que pede outra tentativa. Devolver 200 com `answer` em
+            # branco seria anunciar sucesso sem entregar resposta.
             logger.warning("model produced neither a tool call nor any text")
             return {
                 "trace": [
@@ -199,13 +216,114 @@ class SalesAgent:
                 ]
             }
 
+        # A prosa também passa pela verificação. Sem isso, bastaria o modelo
+        # responder sem chamar a ferramenta — caminho observado em ~30% das
+        # execuções — para publicar qualquer número sem rastreabilidade.
+        fallback = FinalAnswer(answer=text, assumptions=[], warnings=[FALLBACK_WARNING])
+        verified = self._verify(state, fallback, None, None)
+        verified["trace"] = [
+            ToolTrace(
+                name=SUBMIT_ANSWER,
+                status="error",
+                error="Model answered without calling submit_answer.",
+            ),
+            *verified.get("trace", []),
+        ]
+        return verified
+
+    def _verify(
+        self,
+        state: AgentState,
+        final: FinalAnswer,
+        args: dict[str, Any] | None,
+        call_id: str | None,
+    ) -> dict[str, Any]:
+        """Confere que todo número apresentado ao usuário veio de uma consulta.
+
+        Esta é a trava que faltava. A regra "o DuckDB calcula" vivia apenas no
+        prompt, e instrução é seguida de forma probabilística: perguntado pela
+        diferença entre planejado e realizado, o modelo consultou as duas somas e
+        subtraiu na resposta, errando o valor em 10.000 e o sinal.
+
+        Verifica `answer`, `assumptions` e `warnings`: os três aparecem na
+        resposta da API, e um número inventado numa premissa engana tanto quanto
+        um inventado na resposta.
+
+        Quando um número não é rastreável, ele volta ao modelo no mesmo mecanismo
+        que trata SQL rejeitado. A cota de turnos limita as tentativas.
+
+        Esgotada a cota, a resposta é entregue com aviso explícito e
+        `numbers_verified=False` no metadata. Devolver 500 daria nada a quem
+        perguntou; o campo permite ao cliente decidir sem interpretar prosa.
+        """
+        claims = "\n".join([final.answer, *final.assumptions, *final.warnings])
+        unverified = unverified_numbers(claims, state["question"], set(state["result_numbers"]))
+
+        if not unverified:
+            # Uma entrada `ok` explícita registra que a verificação rodou. Sem
+            # ela, "sem erro no trace" seria ambíguo entre verificado e ignorado.
+            return {
+                "final": final,
+                "numbers_verified": True,
+                "trace": [ToolTrace(name="number_check", args=args or {}, status="ok")],
+            }
+
+        trace = ToolTrace(
+            name="number_check",
+            status="error",
+            error=f"Numbers not found in any query result: {', '.join(unverified)}",
+        )
+
+        if state["turns"] < self._settings.max_agent_turns:
+            logger.warning(
+                "answer cites numbers no query returned, asking for a correction",
+                extra={"unverified": unverified, "turns": state["turns"]},
+            )
+            # Precisa ser ToolMessage quando veio de `submit_answer`: a OpenAI
+            # rejeita a próxima chamada se um tool call ficar sem resposta com o
+            # id correspondente. Um HumanMessage aqui quebraria o provider.
+            correction = correction_message(unverified)
+            reply: BaseMessage = (
+                ToolMessage(content=correction, tool_call_id=call_id, status="error")
+                if call_id
+                else HumanMessage(content=correction)
+            )
+            return {"messages": [reply], "trace": [trace]}
+
+        logger.warning(
+            "answer cites unverified numbers and the turn budget is over",
+            extra={"unverified": unverified},
+        )
+        final.warnings.append(
+            "Alguns números desta resposta não foram encontrados em nenhum "
+            f"resultado de consulta ({', '.join(unverified)}) e podem ter sido "
+            "calculados pelo modelo."
+        )
+        return {"final": final, "numbers_verified": False, "trace": [trace]}
+
+    def _recover_node(self, state: AgentState) -> dict[str, Any]:
+        """Pede outra tentativa quando o modelo devolve uma mensagem vazia.
+
+        Medido com `qwen3.5:4b`: em 6 de 32 execuções o modelo respondeu sem tool
+        call, sem texto e sem raciocínio, literalmente nada. É transitório: a
+        mesma pergunta funciona na tentativa seguinte, e das 26 execuções que
+        produziram resposta, 26 estavam corretas.
+
+        Tratar isso como falha terminal descartava ~19% das perguntas por um
+        soluço do modelo. Aqui vira mais um caso de self-correction, com a cota
+        de turnos servindo de limite como já servia para erro de ferramenta.
+
+        O nudge existe para o contexto mudar: com `temperature=0`, reenviar
+        exatamente o mesmo histórico convida exatamente a mesma resposta.
+        """
+        logger.warning("empty model response, asking again", extra={"turns": state["turns"]})
         return {
-            "final": FinalAnswer(answer=text, assumptions=[], warnings=[FALLBACK_WARNING]),
+            "messages": [HumanMessage(content=EMPTY_RESPONSE_NUDGE)],
             "trace": [
                 ToolTrace(
-                    name=SUBMIT_ANSWER,
+                    name="model_retry",
                     status="error",
-                    error="Model answered without calling submit_answer.",
+                    error="Model returned an empty response; asking again.",
                 )
             ],
         }
@@ -215,10 +333,16 @@ class SalesAgent:
     @staticmethod
     def _route(state: AgentState) -> str:
         last = state["messages"][-1]
+
         if not isinstance(last, AIMessage) or not last.tool_calls:
-            # Sem tool call não há o que executar. Ir para `finish` em vez de voltar
-            # ao modelo evita alternância infinita entre os dois nós.
+            # Sem tool call, ou o modelo respondeu em prosa, e aí a prosa vale
+            # como resposta, ou não respondeu nada, e aí vale tentar de novo.
+            # Voltar direto ao nó do modelo alternaria entre os dois sem nada
+            # mudar no contexto; o nó `recover` acrescenta o pedido explícito.
+            if isinstance(last, AIMessage) and not _text_of(last).strip():
+                return "recover"
             return "finish"
+
         if any(call["name"] == SUBMIT_ANSWER for call in last.tool_calls):
             return "finish"
         return "tools"
@@ -229,14 +353,23 @@ class SalesAgent:
         graph.add_node("tools", self._tools_node)
         graph.add_node("finish", self._finish_node)
 
+        graph.add_node("recover", self._recover_node)
+
         graph.set_entry_point("agent")
         graph.add_conditional_edges(
             "agent",
             self._route,
-            {"tools": "tools", "finish": "finish"},
+            {"tools": "tools", "finish": "finish", "recover": "recover"},
         )
         graph.add_edge("tools", "agent")
-        graph.add_edge("finish", END)
+        graph.add_edge("recover", "agent")
+        # `finish` nem sempre termina: quando a verificação de números reprova a
+        # resposta, ela volta ao modelo com o pedido de correção.
+        graph.add_conditional_edges(
+            "finish",
+            lambda state: END if state.get("final") is not None else "agent",
+            {"agent": "agent", END: END},
+        )
         return graph.compile()
 
     # -- execução ----------------------------------------------------------
@@ -244,6 +377,7 @@ class SalesAgent:
     def run(self, question: str) -> AgentResult:
         """Responde uma pergunta, devolvendo a resposta e o trace da execução."""
         initial: AgentState = {
+            "question": question,
             "messages": [
                 SystemMessage(content=self._system_prompt),
                 HumanMessage(content=question),
@@ -251,6 +385,8 @@ class SalesAgent:
             "turns": 0,
             "trace": [],
             "final": None,
+            "result_numbers": [],
+            "numbers_verified": True,
         }
 
         # Segunda trava contra loop, independente da cota de turnos: cada turno
@@ -276,6 +412,7 @@ class SalesAgent:
             data_queried=any(
                 entry.name == "query_sales_data" and entry.status == "ok" for entry in trace
             ),
+            numbers_verified=bool(state.get("numbers_verified", True)),
         )
         logger.info(
             "agent run finished",

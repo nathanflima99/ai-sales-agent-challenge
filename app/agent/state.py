@@ -34,7 +34,21 @@ class AgentState(TypedDict):
     `turns` conta chamadas ao modelo e é a trava principal contra loop infinito.
     """
 
+    #: A pergunta original. Números que já vinham dela não contam como cálculo
+    #: do modelo na verificação final.
+    question: str
+
     messages: Annotated[list[AnyMessage], add_messages]
     turns: int
     trace: Annotated[list[ToolTrace], operator.add]
     final: FinalAnswer | None
+
+    #: Todo número que alguma consulta devolveu, normalizado para sequência de
+    #: dígitos. É contra este conjunto que a resposta final é verificada: um
+    #: número que não está aqui não veio do banco, veio da cabeça do modelo.
+    result_numbers: Annotated[list[str], operator.add]
+
+    #: Falso quando a resposta cita algum número que nenhuma consulta devolveu e
+    #: a cota de turnos acabou antes de o modelo corrigir. Sobe para o metadata
+    #: da API: permite ao cliente decidir sem interpretar o texto do aviso.
+    numbers_verified: bool

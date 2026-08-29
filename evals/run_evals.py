@@ -239,9 +239,20 @@ def main() -> int:
         status = "APROVADO" if outcome.passed else "REPROVADO"
         print(f"{outcome.case_id:<26}{status:<12}{outcome.elapsed_s:>6.1f}s   {outcome.turns:>4}")
     print("-" * 72)
-    total_time = sum(o.elapsed_s for o in outcomes)
-    mean = total_time / total if total else 0.0
-    print(f"TAXA DE ACERTO: {passed}/{total}   tempo medio {mean:.1f}s por pergunta")
+
+    # A média cobre apenas execuções que chegaram a responder. Incluir as que
+    # falharam por transporte, cujo tempo fica em 0.0s, subestima a latência —
+    # uma rodada com três erros chegou a reportar 58s onde a real era ~85s.
+    timed = [o for o in outcomes if o.error is None and o.elapsed_s > 0]
+    mean = sum(o.elapsed_s for o in timed) / len(timed) if timed else 0.0
+    errored = sum(1 for o in outcomes if o.error is not None)
+
+    summary = f"TAXA DE ACERTO: {passed}/{total}   tempo medio {mean:.1f}s"
+    if timed:
+        summary += f" (n={len(timed)})"
+    if errored:
+        summary += f"   {errored} sem resposta"
+    print(summary)
     print("=" * 72)
 
     return 0 if passed == total else 1
