@@ -583,7 +583,7 @@ Na pergunta de promoções o agente gastou 3 a 4 turnos, quantificou o efeito no
 preço (`-33,53` de diferença média sob promoção) e recusou explicitamente
 conclusão causal sobre volume, apontando os 12 registros de amostra. É o caso
 mais caro do conjunto — 157 s a 252 s — e o que mais depende da cota de turnos:
-com o limite anterior de 12 ele estourava sem responder.
+com o limite original de 6 ele consumia 10 e terminava sem responder.
 
 **Latência: ~111 s por pergunta**, com casos entre 55 s e 252 s. É quase toda
 inferência do modelo de 4B — as consultas ao DuckDB levaram entre 1,8 e 332 ms.

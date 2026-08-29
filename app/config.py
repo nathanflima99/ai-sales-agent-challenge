@@ -58,7 +58,12 @@ class Settings(BaseSettings):
     # número ser reajustado. Medido: a pergunta de promoções, que já gastava 6
     # turnos no melhor caso, estourou 10 quando os três dispararam na mesma
     # execução.
-    max_agent_turns: int = 12
+    #
+    # 15, e não 12, porque foi com 15 que as três rodadas de 8/8 do golden set
+    # foram medidas. O maior consumo observado ali foi 6 turnos, então 12
+    # provavelmente bastaria — mas o default precisa ser a configuração medida,
+    # não uma que parece suficiente.
+    max_agent_turns: int = 15
     llm_timeout_seconds: int = 30
 
     log_level: str = "INFO"

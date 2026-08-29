@@ -102,17 +102,17 @@ if ($LASTEXITCODE -ne 0) {
 # 6. Cria .env local. Nunca grava a chave no repositorio.
 Write-Step "Criando .env local"
 $EnvPath = Join-Path $RepoRoot ".env"
+# So o que e especifico da nuvem. Repetir os defaults aqui ja causou desvio: este
+# arquivo ficou com MAX_AGENT_TURNS=6 e OLLAMA_THINKING=false depois que as duas
+# coisas mudaram em app/config.py, e o .env vence o default - entao a instalacao
+# guiada entregava silenciosamente a configuracao antiga. O que nao esta aqui vem
+# de app/config.py e acompanha as medicoes.
 $EnvText = @"
 LLM_PROVIDER=ollama
 LLM_MODEL=$ModelName
 OLLAMA_BASE_URL=https://ollama.com
 OLLAMA_API_KEY=$ApiKey
-OLLAMA_THINKING=false
-DATASET_PATH=dataset/sales.csv
-MAX_QUERY_ROWS=100
-MAX_AGENT_TURNS=6
 LLM_TIMEOUT_SECONDS=600
-LOG_LEVEL=INFO
 "@
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($EnvPath, $EnvText, $Utf8NoBom)
