@@ -8,6 +8,8 @@ calcula.** Nenhum número que aparece numa resposta sai da inferência do LLM �
 vêm de uma consulta SQL que é validada antes de executar e fica visível no trace da
 resposta.
 
+O enunciado original do desafio está em [`ENUNCIADO.pdf`](ENUNCIADO.pdf).
+
 ---
 
 ## Começando em 30 segundos
@@ -221,7 +223,7 @@ Os padrões estão em `.env.example`.
 | `OLLAMA_THINKING` | `true` | Reasoning do Ollama. Desligar troca corretude por latência — ver [Thinking / reasoning](#thinking--reasoning) |
 | `DATASET_PATH` | `dataset/sales.csv` | |
 | `MAX_QUERY_ROWS` | `100` | Teto de linhas por consulta |
-| `MAX_AGENT_TURNS` | `12` | Cota de turnos. Retry de ferramenta, de resposta vazia e de verificação consomem do mesmo orçamento |
+| `MAX_AGENT_TURNS` | `15` | Cota de turnos. Retry de ferramenta, de resposta vazia e de verificação consomem do mesmo orçamento |
 | `LLM_TIMEOUT_SECONDS` | `30` | |
 | `LOG_LEVEL` | `INFO` | |
 
