@@ -331,8 +331,10 @@ arredondamentos de um valor consultado — tolerando 1 no último dígito, que �
 carry máximo de um arredondamento. `4.305.470` contra `4.295.470` difere em 10.000
 e continua reprovado.
 
-Em 23 execuções medidas ela disparou 7 vezes, **todas verdadeiras**, e o efeito
-está na tabela de validação mais abaixo.
+Numa medição de 24 execuções ela disparou 7 vezes, **todas verdadeiras**. Depois
+de o prompt passar a contrastar valores derivados com exemplos de SQL, outras 24
+execuções não a dispararam nenhuma vez. Os dois números estão na tabela de
+validação mais abaixo, com o que mudou entre eles.
 
 **O que ela não faz:** garantir que a resposta esteja certa. Um SQL válido pode
 responder a pergunta errada, e nenhuma verificação sintática pega isso. Ela
@@ -484,18 +486,18 @@ rede.
 Três execuções de `python evals/run_evals.py`, na configuração atual:
 
 ```text
-rodada 1:  8/8   132.7s por pergunta
-rodada 2:  8/8   127.6s
-rodada 3:  7/8   130.8s
+rodada 1:  8/8   118.2s por pergunta
+rodada 2:  8/8   106.2s
+rodada 3:  8/8   108.2s
 ```
 
-**Mediana 8/8, faixa 7–8.** A única falha das três rodadas não foi de qualidade:
-o modelo devolveu uma resposta completamente vazia e não se recuperou dentro da
-cota de turnos — defeito de estabilidade do modelo de 4B, documentado abaixo.
+**24/24, tempo médio 111 s.** Casos entre 55 s e 252 s.
 
-Reportar a faixa em vez de um ponto é deliberado. Uma execução isolada deste
-golden set já deu 8/8 e já deu 5/8 com o mesmo código; quem clonar o repositório
-e rodar uma vez precisa saber disso antes de concluir que algo quebrou.
+Reportar a faixa em vez de um ponto continua sendo o certo, mesmo com três
+rodadas limpas. Uma execução isolada deste golden set já deu 5/8 com código que
+hoje dá 8/8; quem clonar o repositório e rodar uma vez precisa saber disso antes
+de concluir que algo quebrou. O que mudou entre aquelas medições e esta está
+registrado logo abaixo — não foi o modelo que melhorou.
 
 Os cinco primeiros casos são as perguntas de exemplo do enunciado. Em cada um o
 SQL escrito pelo agente foi **reexecutado pelo harness** e produziu o valor de
@@ -539,22 +541,33 @@ o teto de VRAM.
 A verificação de que todo valor citado veio de uma consulta foi medida contra a
 ausência dela, nas mesmas condições:
 
-| | Sem trava | Com trava |
-|---|---|---|
-| Rodadas | 6/8, 8/8, 5/8 | 8/8, 8/8, 7/8 |
-| Mediana | 6 | **8** |
-| Pior caso | 5 | **7** |
-| Tempo médio | ~83 s | ~130 s |
-| Falsos positivos | — | **0 em 23 execuções** |
+| | Sem trava | Trava, 1ª versão | Trava calibrada |
+|---|---|---|---|
+| Rodadas | 6/8, 8/8, 5/8 | 8/8, 8/8, 7/8 | **8/8, 8/8, 8/8** |
+| Pior caso | 5 | 7 | **8** |
+| Tempo médio | ~83 s | ~130 s | ~111 s |
+| Disparos | — | 7 em 24 | **0 em 24** |
 
-Ela custa cerca de 47 s por pergunta e devolve o pior caso subindo de 5 para 7 —
-que é o que importa, porque o pior caso é o que alguém encontra ao rodar uma vez.
+Ela custa cerca de 28 s por pergunta e leva o pior caso de 5 para 8 — que é o que
+importa, porque o pior caso é o que alguém encontra ao rodar uma vez.
 
-Os sete disparos das três rodadas foram atribuídos à pergunta e todos procedem.
-O mais ilustrativo: perguntado pela diferença entre planejado e realizado, o
-modelo narrou `4.295.470` sem que nenhuma consulta o tivesse devolvido — e, numa
-das execuções, o mesmo valor arredondado como "4,3 milhões". Nos dois casos ele
-tinha calculado de cabeça.
+Os sete disparos da versão intermediária foram todos atribuídos à pergunta e
+todos procediam. O mais ilustrativo: perguntado pela diferença entre planejado e
+realizado, o modelo narrou `4.295.470` sem que nenhuma consulta o tivesse
+devolvido — e, numa das execuções, o mesmo valor arredondado como "4,3 milhões".
+Nos dois casos ele tinha calculado de cabeça.
+
+**Zero disparos na versão final não significa que a trava ficou permissiva.** Ela
+foi afrouxada num ponto só, e estreito: passou a aceitar truncamento além de
+arredondamento, porque reprovava "953 milhões" narrando `953.531.302`. Esse
+afrouxamento não alcança o caso do `4.295.470`, que continua reprovado nos testes.
+
+O que explica a queda é o prompt, que passou a contrastar valores derivados com
+exemplos de SQL certo e errado, e a cota de turnos, que subiu para 15. O modelo
+parou de calcular de cabeça porque foi instruído melhor e teve espaço para
+consultar de novo — não porque a verificação parou de olhar. A distinção importa:
+uma trava silenciosa por estar cega é pior que trava nenhuma, já que passa
+confiança sem entregar nada.
 
 Três casos merecem destaque, porque mostram comportamento e não só aritmética:
 
@@ -566,10 +579,13 @@ Três casos merecem destaque, porque mostram comportamento e não só aritmétic
 - **`ambiguous_sales`** — consultou quantidade **e** faturamento, e declarou em
   `assumptions` qual leitura usou.
 
-Na pergunta de promoções o agente gastou 6 turnos e 4 consultas antes de concluir,
-e registrou a limitação amostral em vez de atribuir causalidade.
+Na pergunta de promoções o agente gastou 3 a 4 turnos, quantificou o efeito no
+preço (`-33,53` de diferença média sob promoção) e recusou explicitamente
+conclusão causal sobre volume, apontando os 12 registros de amostra. É o caso
+mais caro do conjunto — 157 s a 252 s — e o que mais depende da cota de turnos:
+com o limite anterior de 12 ele estourava sem responder.
 
-**Latência: ~130 s por pergunta**, com casos entre 57 s e 292 s. É quase toda
+**Latência: ~111 s por pergunta**, com casos entre 55 s e 252 s. É quase toda
 inferência do modelo de 4B — as consultas ao DuckDB levaram entre 1,8 e 332 ms.
 
 **Docker validado**: `docker build` bem-sucedido, container sobe como usuário
@@ -585,7 +601,9 @@ dentro do container alcançando o túnel via `host.docker.internal`.
 - **Às vezes devolve resposta vazia** — sem tool call, sem texto e sem raciocínio.
   Medido em 6 de 32 execuções. O agente pede outra tentativa; quando nem assim
   vem resposta, a requisição falha de forma controlada em vez de devolver HTTP
-  200 com `answer` em branco. Foi a única falha das três rodadas atuais.
+  200 com `answer` em branco. Não ocorreu nas 24 execuções finais, mas 24 não são
+  suficientes para dizer que sumiu — a cota maior dá mais espaço para a segunda
+  tentativa, e é provável que só tenha ficado mais raro.
 - **Calcula de cabeça quando deveria consultar.** Perguntado pela diferença entre
   planejado e realizado, pediu as duas somas ao banco e subtraiu na resposta.
   É o que a trava de números detecta.
@@ -598,10 +616,12 @@ a arquitetura não muda.
 
 ## Limitações conhecidas
 
-**Latência alta no baseline local.** O benchmark histórico com `qwen3.5:4b` chegou
-a média de 122 s por pergunta, quase tudo em inferência. O modo thinking agora fica
-desligado por padrão justamente para medir e reduzir esse custo; o novo golden set
-deve ser registrado antes de substituir o baseline acima.
+**Latência alta no baseline local.** Média de 111 s por pergunta com `qwen3.5:4b`,
+quase tudo em inferência — as consultas ao DuckDB são milissegundos. O modo
+thinking fica **ligado** por padrão, e é responsável por boa parte desse custo:
+desligá-lo cai para 53 s e derruba o acerto de 8/8 para 3/8, então a troca não
+compensa. Um modelo servido em GPU adequada resolveria a latência sem tocar na
+arquitetura; a máquina de teste roda em CPU, por falta de CUDA.
 
 **Sem memória entre perguntas.** Cada requisição é independente; não há follow-up
 ("e no ano anterior?"). O LangGraph resolve isso com `MemorySaver` e `thread_id`,
@@ -615,8 +635,9 @@ conhecimento do negócio que o dataset não carrega.
 
 ## Próximos passos
 
-1. Repetir o golden set com um modelo maior e comparar contra o
-   baseline 8/8 / 122 s acima.
+1. Repetir o golden set num modelo maior **servido em GPU** — o teste local com
+   `qwen2.5-coder:7b` já foi feito e saiu pior (1/8), mas em CPU e sem tool
+   calling confiável, o que não isola o efeito do tamanho.
 2. Validar o mesmo fluxo com Ollama Cloud usando apenas `OLLAMA_BASE_URL` e
    `OLLAMA_API_KEY`, sem runtime Ollama local.
 3. Comparar `qwen3.5:4b` com um modelo maior medindo regressão, em vez de opinar.
