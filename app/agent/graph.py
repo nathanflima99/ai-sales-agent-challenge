@@ -24,7 +24,11 @@ from langgraph.graph import END, StateGraph
 from app.agent.prompts import build_system_prompt
 from app.agent.state import AgentState, ToolTrace
 from app.agent.tools import SUBMIT_ANSWER, FinalAnswer, normalize_text_list
-from app.agent.verification import correction_message, numbers_in_payload, unverified_numbers
+from app.agent.verification import (
+    correction_message,
+    numbers_in_payload,
+    unverified_numbers,
+)
 from app.analytics.profiling import DatasetProfile
 from app.config import Settings
 from app.errors import AgentLoopError, AppError, LLMError
@@ -78,6 +82,7 @@ class SalesAgent:
         self._tools_by_name = {tool.name: tool for tool in tools}
         self._model = model.bind_tools(tools)
         self._system_prompt = build_system_prompt(profile)
+        self._profile_facts = _profile_evidence(profile)
         self._settings = settings
         self._graph = self._build_graph()
 
@@ -274,7 +279,14 @@ class SalesAgent:
             error=f"Numbers not found in any query result: {', '.join(unverified)}",
         )
 
-        if state["turns"] < self._settings.max_agent_turns:
+        # Uma tentativa, não a cota inteira. Medido com qwen3.5:4b: o mesmo
+        # número foi reprovado nos turnos 2, 4 e 5 da mesma execução — o modelo
+        # foi avisado três vezes e não corrigiu. Insistir triplicava a latência
+        # sem mudar a resposta. A trava vale como detector; a correção, quando
+        # acontece, acontece na primeira tentativa.
+        already_retried = any(entry.name == "number_check" for entry in state["trace"])
+
+        if not already_retried and state["turns"] < self._settings.max_agent_turns:
             logger.warning(
                 "answer cites numbers no query returned, asking for a correction",
                 extra={"unverified": unverified, "turns": state["turns"]},
@@ -383,9 +395,20 @@ class SalesAgent:
                 HumanMessage(content=question),
             ],
             "turns": 0,
-            "trace": [],
+            # O perfil entra como primeira chamada do trace, com o SQL que o
+            # produziu. Assim a evidência é reconferível à mão, como qualquer
+            # outra — evidência invisível não serviria de evidência.
+            "trace": [
+                ToolTrace(
+                    name="dataset_profile",
+                    args=dict(self._profile_facts),
+                    status="ok",
+                    sql=PROFILE_SQL,
+                    row_count=1,
+                )
+            ],
             "final": None,
-            "result_numbers": [],
+            "result_numbers": sorted(numbers_in_payload(self._profile_facts)),
             "numbers_verified": True,
         }
 
@@ -425,6 +448,37 @@ class SalesAgent:
             },
         )
         return result
+
+
+#: SQL equivalente ao que `build_profile` executa para os fatos que vão ao
+#: prompt. Vai no trace para que a evidência seja reconferível: um número
+#: aprovado contra evidência invisível quebraria justamente o que o trace serve
+#: para garantir.
+PROFILE_SQL = (
+    "SELECT COUNT(*) AS rows, COUNT(DISTINCT product_id) AS products, "
+    "COUNT(DISTINCT local) AS locations FROM sales"
+)
+
+
+def _profile_evidence(profile: DatasetProfile) -> dict[str, int]:
+    """Fatos do perfil que o system prompt informa ao modelo.
+
+    `build_profile` roda SQL contra a mesma view no startup, então estes valores
+    têm a mesma procedência de qualquer outro do trace — só foram obtidos antes
+    da pergunta. Sem eles na evidência, citar as 203.635 linhas informadas no
+    próprio prompt vira número inventado: aconteceu duas vezes numa medição de
+    32 execuções, gastando um turno cada.
+
+    Apenas o que o prompt **declara**. Uma versão anterior semeava também as
+    contagens de promoção e de nulos, que não aparecem no prompt — e aí as 12
+    linhas `Flash` autorizariam uma alegação de `12%` sem consulta nenhuma.
+    Evidência precisa ser estreita para significar alguma coisa.
+    """
+    return {
+        "rows": profile.row_count,
+        "products": profile.product_count,
+        "locations": len(profile.locations),
+    }
 
 
 def _text_of(message: AIMessage) -> str:

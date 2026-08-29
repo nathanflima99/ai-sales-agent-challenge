@@ -262,6 +262,7 @@ Trace real, capturado de uma execução contra `qwen3.5:4b` via Ollama:
     "turns": 2,
     "total_ms": 79840.89,
     "data_queried": true,
+    "numbers_verified": true,
     "trace": [
       {
         "name": "query_sales_data",
@@ -283,10 +284,55 @@ O `trace` é o recurso mais útil da resposta: ele mostra o **SQL exato** que o
 agente escreveu, então qualquer número pode ser reconferido à mão. O campo `sql`
 é o pós-guard, com o `LIMIT` já aplicado.
 
-`data_queried` é o único fato verificável sobre a fundamentação da resposta: ele é
-verdadeiro somente quando existe um `query_sales_data` com status `ok` no trace.
+Dois campos do `metadata` dizem o que conseguimos **provar** sobre a resposta, e
+os nomes foram escolhidos por isso — nenhum deles afirma que ela está correta.
+
+`data_queried` é verdadeiro somente quando existe um `query_sales_data` com
+status `ok` no trace.
+
+`numbers_verified` é falso quando a resposta cita algum número que nenhuma
+consulta devolveu — o modelo calculou de cabeça — e a cota de turnos acabou antes
+da correção. Nesse caso a resposta é entregue com um aviso, e o campo permite ao
+cliente recusá-la sem interpretar prosa. Ver
+[a trava de números](#a-trava-de-números).
 Ele **informa em vez de bloquear** — uma recusa legítima ("qual a previsão para
 2030?") não precisa consultar nada e responde com `data_queried: false`.
+
+### A trava de números
+
+O princípio do topo deste README — *nenhum número sai da inferência do LLM* — era,
+até certo ponto, uma regra escrita no prompt. E instrução é seguida de forma
+probabilística.
+
+O caso que provou isso: perguntado pela **diferença** entre planejado e realizado,
+o modelo escreveu
+
+```sql
+SELECT SUM(planned_quantity), SUM(actual_quantity) FROM sales
+```
+
+recebeu 949.259.991 e 953.555.461 corretos, e **subtraiu na resposta**, devolvendo
+−4.305.470 onde o correto era 4.295.470. Errou o valor e o sinal. A conta era o
+enunciado da pergunta.
+
+Hoje isso é verificado, não pedido. O nó de ferramentas guarda os números que cada
+consulta devolveu; o nó de encerramento confere que todo número mostrado ao
+usuário — em `answer`, `assumptions` e `warnings` — está entre eles. O que não
+estiver volta ao modelo pelo mesmo mecanismo que trata SQL rejeitado.
+
+A verificação é conservadora, porque uma trava que gera falso positivo é desligada
+e aí deixa de existir. Ela ignora números de um dígito, anos e componentes de
+data, valores que já estavam na pergunta ou no contexto dado ao modelo, e
+arredondamentos de um valor consultado — tolerando 1 no último dígito, que é o
+carry máximo de um arredondamento. `4.305.470` contra `4.295.470` difere em 10.000
+e continua reprovado.
+
+Em 23 execuções medidas ela disparou 7 vezes, **todas verdadeiras**, e o efeito
+está na tabela de validação mais abaixo.
+
+**O que ela não faz:** garantir que a resposta esteja certa. Um SQL válido pode
+responder a pergunta errada, e nenhuma verificação sintática pega isso. Ela
+garante rastreabilidade, não correção.
 
 ### O que este trace revela sobre modelos pequenos
 
@@ -425,34 +471,54 @@ medida, para não tomar esse atalho.
 
 ## Validação com modelo real
 
-### Baseline histórico — antes de fixar thinking desligado
-
 Executado ponta a ponta contra **`qwen3.5:4b`** (4.7B, Q4_K_M) servido por Ollama
 0.32.6 num servidor remoto, alcançado por túnel SSH — sem expor a porta 11434 na
-rede. Esta execução foi feita antes de `OLLAMA_THINKING=false` ser explicitado no
-provider e deve ser preservada como baseline para o novo benchmark A/B.
+rede.
 
-Resultado de `python evals/run_evals.py` — **8/8 aprovados**:
+### O número, com a variância junto
+
+Três execuções de `python evals/run_evals.py`, na configuração atual:
 
 ```text
-CASO                      RESULTADO   TEMPO     TURNOS
-------------------------------------------------------------------------
-top_product               APROVADO      86.6s      2
-top_location              APROVADO     102.7s      3
-period_total              APROVADO      84.0s      2
-plan_gap                  APROVADO      82.6s      2
-promo_impact              APROVADO     292.1s      6
-ambiguous_sales           APROVADO     155.2s      4
-promotion_null_trap       APROVADO     115.3s      3
-out_of_scope              APROVADO      57.4s      1
-------------------------------------------------------------------------
-TAXA DE ACERTO: 8/8   tempo medio 122.0s por pergunta
+rodada 1:  8/8   132.7s por pergunta
+rodada 2:  8/8   127.6s
+rodada 3:  7/8   130.8s
 ```
 
-Os cinco primeiros são as perguntas de exemplo do enunciado. Em cada um deles o
+**Mediana 8/8, faixa 7–8.** A única falha das três rodadas não foi de qualidade:
+o modelo devolveu uma resposta completamente vazia e não se recuperou dentro da
+cota de turnos — defeito de estabilidade do modelo de 4B, documentado abaixo.
+
+Reportar a faixa em vez de um ponto é deliberado. Uma execução isolada deste
+golden set já deu 8/8 e já deu 5/8 com o mesmo código; quem clonar o repositório
+e rodar uma vez precisa saber disso antes de concluir que algo quebrou.
+
+Os cinco primeiros casos são as perguntas de exemplo do enunciado. Em cada um o
 SQL escrito pelo agente foi **reexecutado pelo harness** e produziu o valor de
 ground truth — `Product_1359` / 95.112.506, `Whse_J` / 617.421.620, e assim por
 diante.
+
+### O que a trava de números mudou
+
+A verificação de que todo valor citado veio de uma consulta foi medida contra a
+ausência dela, nas mesmas condições:
+
+| | Sem trava | Com trava |
+|---|---|---|
+| Rodadas | 6/8, 8/8, 5/8 | 8/8, 8/8, 7/8 |
+| Mediana | 6 | **8** |
+| Pior caso | 5 | **7** |
+| Tempo médio | ~83 s | ~130 s |
+| Falsos positivos | — | **0 em 23 execuções** |
+
+Ela custa cerca de 47 s por pergunta e devolve o pior caso subindo de 5 para 7 —
+que é o que importa, porque o pior caso é o que alguém encontra ao rodar uma vez.
+
+Os sete disparos das três rodadas foram atribuídos à pergunta e todos procedem.
+O mais ilustrativo: perguntado pela diferença entre planejado e realizado, o
+modelo narrou `4.295.470` sem que nenhuma consulta o tivesse devolvido — e, numa
+das execuções, o mesmo valor arredondado como "4,3 milhões". Nos dois casos ele
+tinha calculado de cabeça.
 
 Três casos merecem destaque, porque mostram comportamento e não só aritmética:
 
@@ -467,7 +533,7 @@ Três casos merecem destaque, porque mostram comportamento e não só aritmétic
 Na pergunta de promoções o agente gastou 6 turnos e 4 consultas antes de concluir,
 e registrou a limitação amostral em vez de atribuir causalidade.
 
-**Baseline de latência: 57 a 292 s por pergunta**, média 122 s. É quase toda
+**Latência: ~130 s por pergunta**, com casos entre 57 s e 292 s. É quase toda
 inferência do modelo de 4B — as consultas ao DuckDB levaram entre 1,8 e 332 ms.
 
 **Docker validado**: `docker build` bem-sucedido, container sobe como usuário
@@ -480,13 +546,17 @@ dentro do container alcançando o túnel via `host.docker.internal`.
   objeto onde o contrato pede lista. Tratado por `normalize_text_list`.
 - **Ignora a ferramenta de saída em ~30% das execuções**, respondendo em prosa. A
   resposta é preservada e um `warning` explícito é acrescentado.
-- **Raramente devolve resposta vazia** (1 em ~16 execuções): sem tool call e sem
-  texto. Nesse caso a requisição falha de forma controlada em vez de devolver
-  HTTP 200 com `answer` em branco.
+- **Às vezes devolve resposta vazia** — sem tool call, sem texto e sem raciocínio.
+  Medido em 6 de 32 execuções. O agente pede outra tentativa; quando nem assim
+  vem resposta, a requisição falha de forma controlada em vez de devolver HTTP
+  200 com `answer` em branco. Foi a única falha das três rodadas atuais.
+- **Calcula de cabeça quando deveria consultar.** Perguntado pela diferença entre
+  planejado e realizado, pediu as duas somas ao banco e subtraiu na resposta.
+  É o que a trava de números detecta.
 
-Nenhuma dessas limitações afetou a correção dos números no baseline, porque quem
-calcula é o DuckDB. O próximo passo é repetir exatamente o mesmo golden set com
-`OLLAMA_THINKING=false` e comparar acerto, turnos e latência.
+Nenhuma dessas limitações produz número errado sem aviso, porque quem calcula é o
+DuckDB e o que ele não calculou é sinalizado. Um modelo maior reduziria as três;
+a arquitetura não muda.
 
 ---
 
@@ -509,7 +579,7 @@ conhecimento do negócio que o dataset não carrega.
 
 ## Próximos passos
 
-1. Rodar o golden set completo com `OLLAMA_THINKING=false` e comparar contra o
+1. Repetir o golden set com um modelo maior e comparar contra o
    baseline 8/8 / 122 s acima.
 2. Validar o mesmo fluxo com Ollama Cloud usando apenas `OLLAMA_BASE_URL` e
    `OLLAMA_API_KEY`, sem runtime Ollama local.

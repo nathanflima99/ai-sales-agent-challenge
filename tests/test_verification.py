@@ -48,6 +48,32 @@ def test_the_sign_is_part_of_the_claim():
     assert check("A diferença é de -4.295.470 unidades.", results) == []
 
 
+def test_restating_the_magnitude_of_a_signed_result_is_allowed():
+    """Caso real, encontrado testando a aplicação à mão.
+
+    O banco devolveu `SUM(planned - actual) = -4295470`, e a resposta disse "a
+    diferença foi de -4.295.470" e, na frase seguinte, "superação de 4.295.470
+    unidades". O positivo é reformulação do negativo, não alegação nova.
+    """
+    results = numbers_in_payload({"rows": [{"diferenca": -4295470}]})
+    resposta = (
+        "A diferença foi de -4.295.470 unidades. Houve superação da meta em 4.295.470 unidades."
+    )
+
+    assert check(resposta, results) == []
+
+
+def test_the_magnitude_alone_is_still_rejected():
+    """A proteção contra inversão de sinal continua de pé.
+
+    Se a resposta cita só o positivo, sem mostrar o negativo que veio do banco,
+    é exatamente o erro que a trava existe para pegar.
+    """
+    results = numbers_in_payload({"rows": [{"diferenca": -4295470}]})
+
+    assert check("Houve superação da meta em 4.295.470 unidades.", results) == ["4295470"]
+
+
 def test_the_same_answer_passes_when_the_database_did_the_subtraction():
     results = numbers_in_payload({"rows": [{"diferenca": 4295470}]})
 
@@ -69,6 +95,86 @@ def test_rounded_narration_is_accepted():
     results = numbers_in_payload({"rows": [{"total": 95112506}]})
 
     assert check("Foram cerca de 95,1 milhões de unidades.", results) == []
+
+
+def test_rounding_up_is_accepted_only_in_the_right_direction():
+    """Quem decide é o dígito descartado, não uma tolerância.
+
+    Uma tolerância de 1 no prefixo validava `94 milhões` e `96 milhões` para o
+    mesmo 95.112.506 — e nenhum dos dois é o arredondamento correto.
+    """
+    de_95_5 = numbers_in_payload({"rows": [{"total": 95512506}]})
+    assert check("Foram cerca de 96 milhões.", de_95_5) == []  # 95|5... arredonda pra 96
+
+    de_95_1 = numbers_in_payload({"rows": [{"total": 95112506}]})
+    assert check("Foram cerca de 95 milhões.", de_95_1) == []  # truncamento
+    assert check("Foram cerca de 96 milhões.", de_95_1) == ["96"]  # 95|1... não sobe
+    assert check("Foram cerca de 94 milhões.", de_95_1) == ["94"]  # nem desce
+
+
+def test_a_different_number_is_not_a_rounding():
+    """A tolerância é de 1 no último dígito mantido, não uma licença.
+
+    `4305470` contra `4295470` difere em 10.000 — é o bug original, não
+    arredondamento.
+    """
+    results = numbers_in_payload({"rows": [{"diferenca": 4295470}]})
+
+    assert check("A diferença é 4.305.470.", results) == ["4305470"]
+
+
+def test_date_components_are_not_claims():
+    """O `31` de `31/12/2012` não é uma conta.
+
+    Falso positivo real: reprovado três vezes numa medição de 32 execuções.
+    """
+    assert check("O período vai de 01/01/2012 a 31/12/2012.", set()) == []
+
+
+def test_a_ratio_is_not_masked_as_a_date():
+    """`60/30/10` tem forma de data e não é uma.
+
+    Sem validar o calendário, a máscara escondia as três alegações antes da
+    verificação, e a resposta passava como verificada.
+    """
+    assert sorted(check("A composição foi 60/30/10.", set())) == ["10", "30", "60"]
+
+
+def test_both_date_orders_are_recognized():
+    """O CSV traz DD/MM/YYYY e o DuckDB devolve YYYY-MM-DD."""
+    assert check("De 2012-01-01 até 31/12/2012.", set()) == []
+
+
+def test_the_date_exemption_is_positional_not_by_value():
+    """Mascarar a data, não liberar o valor dela.
+
+    Isentar por valor deixava passar o `31` da contagem só porque o mesmo 31
+    aparecia numa data ao lado.
+    """
+    assert check("Houve 31 vendas em 31/12/2012.", set()) == ["31"]
+
+
+def test_rounding_that_grows_a_digit():
+    """`99512506` narrado como `100 milhões` cresce de dois para três dígitos."""
+    results = numbers_in_payload({"rows": [{"total": 99512506}]})
+
+    assert check("Foram cerca de 100 milhões.", results) == []
+
+
+def test_profile_facts_count_as_query_evidence():
+    """Os números do perfil vêm de SQL, só que rodado no startup.
+
+    O agente semeia a evidência com eles, então citar as 203.635 linhas não é
+    exceção à regra — é um número que veio mesmo do banco. Falso positivo real:
+    reprovado duas vezes numa medição de 32 execuções.
+    """
+    unverified = unverified_numbers(
+        "O dataset tem 203.635 linhas e 1.966 produtos.",
+        "Pergunta",
+        result_numbers={"203635", "1966"},
+    )
+
+    assert unverified == []
 
 
 def test_identifiers_with_digits_are_not_numeric_claims():

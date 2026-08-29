@@ -106,49 +106,143 @@ def numbers_in_payload(payload: Any) -> set[str]:
 
 
 def _is_rounding_of(candidate: str, known: set[str]) -> bool:
-    """Aceita `95,1 milhoes` como narracao de `95.112.506`.
+    """Aceita narracao arredondada de um valor que veio do banco.
 
-    Um arredondamento e um prefixo dos digitos do valor original, com o mesmo
-    sinal. Exigir os digitos exatos transformaria toda narracao aproximada em
-    falso positivo; ignorar o sinal deixaria passar a inversao.
+    A comparacao e aritmetica, nao textual: o valor da fonte e arredondado em
+    cada casa decimal e comparado com o candidato. Duas tentativas anteriores
+    falharam por mexer em string:
+
+    - prefixo simples nao aceitava arredondamento para cima (`96` de 95.512.506);
+    - prefixo com tolerancia de 1 aceitava demais, validando `94` e `96` para o
+      mesmo 95.112.506, quando so `95` esta certo;
+    - e prefixo com carry quebrava quando o arredondamento cresce um digito:
+      `100 milhoes` narrando 99.512.506 nao tem prefixo em comum nenhum.
+
+    Arredondar de verdade resolve os tres. `4305470` contra `4295470` nao e
+    resultado de arredondamento em nenhuma casa e continua reprovado.
+
+    O sinal precisa bater; ignora-lo deixaria passar a inversao.
+
+    Limitacao aceita: como so comparamos digitos, a magnitude escrita por extenso
+    ("milhoes") se perde, entao um candidato muito curto pode casar por uma casa
+    improvavel. O risco e pequeno perto do de reprovar narracao honesta.
     """
     negative = candidate.startswith("-")
-    digits = candidate.lstrip("-")
+    value = int(candidate.lstrip("-"))
+
     for source in known:
         if source.startswith("-") != negative:
             continue
-        source_digits = source.lstrip("-")
-        if len(source_digits) > len(digits) and source_digits.startswith(digits):
-            return True
+        number = int(source.lstrip("-"))
+
+        # Cada escala e uma casa decimal descartada. `95.112.506` arredondado na
+        # casa do milhao da 95; na casa da centena de milhar, 951.
+        for scale in range(1, len(source.lstrip("-")) + 1):
+            step = 10**scale
+            if (number + step // 2) // step == value:
+                return True
+
     return False
 
 
-def unverified_numbers(claims: str, question: str, result_numbers: set[str]) -> list[str]:
+#: Candidatos a data, validados depois contra o calendario. Casar so pela forma
+#: era largo demais: `60/30/10` e uma razao, nao uma data, e mascara-la escondia
+#: tres alegacoes nao verificadas.
+_DATE_SHAPED = re.compile(r"\d{1,4}[/-]\d{1,2}[/-]\d{1,4}")
+
+
+def _is_calendar_date(text: str) -> bool:
+    """Confere se o trecho e mesmo uma data, nas duas ordens usadas aqui.
+
+    O CSV traz `DD/MM/YYYY` e o DuckDB devolve `YYYY-MM-DD`, entao as duas
+    aparecem em resposta. Basta uma das leituras fazer sentido.
+    """
+    parts = re.split(r"[/-]", text)
+    if len(parts) != 3:
+        return False
+    try:
+        first, second, third = (int(p) for p in parts)
+    except ValueError:
+        return False
+
+    day_first = 1 <= first <= 31 and 1 <= second <= 12 and third in YEAR_RANGE
+    year_first = first in YEAR_RANGE and 1 <= second <= 12 and 1 <= third <= 31
+    return day_first or year_first
+
+
+def mask_dates(text: str) -> str:
+    """Remove as datas do texto antes de extrair as alegacoes.
+
+    Duas precisoes que custaram um apontamento cada:
+
+    - Isentar por valor era largo demais: em "Houve 31 vendas em 31/12/2012", o
+      `31` da data liberava tambem o `31` da contagem. Por isso mascara o trecho,
+      nao o valor.
+    - Casar so pela forma tambem era: `60/30/10` vira data e some inteiro. Por
+      isso o trecho e validado contra o calendario antes de ser mascarado.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        return " " if _is_calendar_date(match.group()) else match.group()
+
+    return _DATE_SHAPED.sub(replace, text or "")
+
+
+def _is_restated_magnitude(candidate: str, claimed: set[str], result_numbers: set[str]) -> bool:
+    """Aceita a magnitude de um valor com sinal que a resposta ja apresentou.
+
+    Caso real: o banco devolveu `SUM(planned - actual) = -4295470`, e a resposta
+    disse "a diferenca foi de -4.295.470" e, na frase seguinte, "superacao de
+    4.295.470 unidades". O positivo nao esta na evidencia, mas nao e alegacao
+    nova - e reformulacao do negativo, que esta.
+
+    A condicao e estreita de proposito: o valor com o sinal oposto precisa
+    aparecer **na propria resposta** e ter vindo de consulta. Se so o positivo
+    aparecesse, continuaria reprovado, que e a protecao contra inversao de sinal.
+    """
+    opposite = candidate[1:] if candidate.startswith("-") else f"-{candidate}"
+    return opposite in claimed and opposite in result_numbers
+
+
+def unverified_numbers(
+    claims: str,
+    question: str,
+    result_numbers: set[str],
+    context_numbers: set[str] | None = None,
+) -> list[str]:
     """Devolve os numeros apresentados ao usuario que nenhuma consulta produziu.
 
     `claims` deve conter tudo que o usuario ve: resposta, premissas e ressalvas.
     Um numero inventado numa premissa engana tanto quanto um inventado na
     resposta.
 
+    `context_numbers` sao os numeros que o proprio sistema deu ao modelo, no
+    system prompt: contagem de linhas, de produtos, periodo. Citar contexto nao e
+    inventar, e reprova-los enchia o trace de ruido - o `203635` foi reprovado
+    duas vezes numa medicao de 32 execucoes.
+
     Ignora, por serem fonte de falso positivo e nao de risco:
 
     - numeros de um digito;
-    - anos;
-    - numeros que ja estavam na pergunta;
+    - anos e componentes de data;
+    - numeros que ja estavam na pergunta ou no contexto dado ao modelo;
     - arredondamentos de um valor que veio de consulta.
     """
-    from_question = numbers_in(question)
+    allowed = numbers_in(question) | (context_numbers or set())
+    claimed = numbers_in(mask_dates(claims))
     unverified: list[str] = []
 
-    for candidate in sorted(numbers_in(claims), key=len, reverse=True):
+    for candidate in sorted(claimed, key=len, reverse=True):
         digits = candidate.lstrip("-")
         if len(digits) < MIN_DIGITS:
             continue
-        if candidate in result_numbers or candidate in from_question:
+        if candidate in result_numbers or candidate in allowed:
             continue
         if len(digits) == 4 and int(digits) in YEAR_RANGE:
             continue
         if _is_rounding_of(candidate, result_numbers):
+            continue
+        if _is_restated_magnitude(candidate, claimed, result_numbers):
             continue
         unverified.append(candidate)
 

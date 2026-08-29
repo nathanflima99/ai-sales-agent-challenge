@@ -14,6 +14,15 @@ from tests.fakes import ExplodingChatModel, ScriptedChatModel, tool_call
 TOTAL_SQL = "SELECT SUM(actual_quantity) AS total FROM sales"
 
 
+def agent_trace(result):
+    """Trace sem a entrada de perfil, que abre toda execução.
+
+    O perfil entra como evidência já no início — ver `_profile_evidence` — então
+    os testes que raciocinam por posição olham o que o agente fez depois dele.
+    """
+    return [entry for entry in result.trace if entry.name != "dataset_profile"]
+
+
 @pytest.fixture
 def make_agent(sample_repository):
     """Constrói um agente sobre a amostra, com respostas do modelo programadas."""
@@ -47,11 +56,15 @@ def test_single_query_then_answer(make_agent):
 
     assert result.answer == "O total realizado foi 33978."
     assert result.turns == 2
-    assert [t.name for t in result.trace] == ["query_sales_data", "submit_answer", "number_check"]
-    assert result.trace[0].status == "ok"
+    assert [t.name for t in agent_trace(result)] == [
+        "query_sales_data",
+        "submit_answer",
+        "number_check",
+    ]
+    assert agent_trace(result)[0].status == "ok"
     # O SQL executado fica visível no trace: é o que torna a resposta auditável.
-    assert "SUM(ACTUAL_QUANTITY)" in (result.trace[0].sql or "").upper()
-    assert "LIMIT 50" in (result.trace[0].sql or "").upper()
+    assert "SUM(ACTUAL_QUANTITY)" in (agent_trace(result)[0].sql or "").upper()
+    assert "LIMIT 50" in (agent_trace(result)[0].sql or "").upper()
 
 
 def test_assumptions_and_warnings_reach_the_result(make_agent):
@@ -94,8 +107,8 @@ def test_agent_recovers_from_a_rejected_query(make_agent):
     result = agent.run("Qual o total?")
 
     assert result.answer == "Consegui na segunda tentativa."
-    assert [t.status for t in result.trace] == ["error", "ok", "ok", "ok"]
-    assert "DROP" in (result.trace[0].error or "").upper()
+    assert [t.status for t in agent_trace(result)] == ["error", "ok", "ok", "ok"]
+    assert "DROP" in (agent_trace(result)[0].error or "").upper()
 
 
 def test_error_message_returned_to_the_model_is_actionable(make_agent):
@@ -108,7 +121,7 @@ def test_error_message_returned_to_the_model_is_actionable(make_agent):
     )
 
     result = agent.run("Pergunta")
-    model_messages = result.trace[0].error or ""
+    model_messages = agent_trace(result)[0].error or ""
 
     assert "not accessible" in model_messages
     assert "sales" in model_messages
@@ -124,8 +137,8 @@ def test_unknown_tool_is_reported_instead_of_crashing(make_agent):
 
     result = agent.run("Pergunta")
 
-    assert result.trace[0].status == "error"
-    assert "Unknown tool" in (result.trace[0].error or "")
+    assert agent_trace(result)[0].status == "error"
+    assert "Unknown tool" in (agent_trace(result)[0].error or "")
 
 
 # --- travas contra loop -------------------------------------------------------
@@ -154,8 +167,8 @@ def test_prose_answer_without_submit_answer_is_still_delivered(make_agent):
     result = agent.run("Pergunta")
 
     assert result.answer == "A resposta em prosa, sem chamar a tool."
-    assert any(t.name == SUBMIT_ANSWER and t.status == "error" for t in result.trace)
-    assert any("without calling submit_answer" in (t.error or "") for t in result.trace)
+    assert any(t.name == SUBMIT_ANSWER and t.status == "error" for t in agent_trace(result))
+    assert any("without calling submit_answer" in (t.error or "") for t in agent_trace(result))
 
 
 @pytest.mark.parametrize("content", ["", "   ", "\n\n"])
@@ -176,7 +189,7 @@ def test_empty_response_is_retried_and_then_answered(make_agent, content):
     result = agent.run("Pergunta")
 
     assert result.answer == "Consegui na segunda tentativa."
-    assert result.trace[0].name == "model_retry"
+    assert agent_trace(result)[0].name == "model_retry"
 
 
 def test_the_retry_asks_the_model_to_continue(sample_repository):
@@ -224,7 +237,7 @@ def test_answer_with_a_number_no_query_returned_is_sent_back(make_agent):
     result = agent.run("Qual a diferença?")
 
     assert result.answer == "O total é 33978."
-    assert any(t.name == "number_check" and t.status == "error" for t in result.trace)
+    assert any(t.name == "number_check" and t.status == "error" for t in agent_trace(result))
 
 
 def test_unverified_number_is_flagged_when_the_budget_runs_out(make_agent):
@@ -292,7 +305,7 @@ def test_data_queried_is_false_when_the_query_failed(make_agent):
 
     result = agent.run("Pergunta")
 
-    assert result.trace[0].status == "error"
+    assert agent_trace(result)[0].status == "error"
     assert result.data_queried is False
 
 
@@ -310,7 +323,7 @@ def test_fallback_after_a_successful_query_is_flagged_but_kept(make_agent):
     assert result.data_queried is True
     assert result.answer == "O total realizado foi 33978."
     assert FALLBACK_WARNING in result.warnings
-    assert any(t.name == SUBMIT_ANSWER and t.status == "error" for t in result.trace)
+    assert any(t.name == SUBMIT_ANSWER and t.status == "error" for t in agent_trace(result))
 
 
 def test_malformed_submit_answer_arguments_are_normalized(make_agent):
