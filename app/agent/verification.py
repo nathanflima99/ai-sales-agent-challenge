@@ -135,11 +135,17 @@ def _is_rounding_of(candidate: str, known: set[str]) -> bool:
             continue
         number = int(source.lstrip("-"))
 
-        # Cada escala e uma casa decimal descartada. `95.112.506` arredondado na
-        # casa do milhao da 95; na casa da centena de milhar, 951.
+        # Cada escala e uma casa decimal descartada, e as duas formas de narrar
+        # sao aceitas: truncar e arredondar. Falso positivo real: a resposta
+        # escreveu "953 milhoes" para 953.531.302, que e truncamento; a regra so
+        # aceitava o arredondado, 954.
+        #
+        # Aceitar os dois nao reabre o buraco da direcao: para 95.112.506,
+        # truncamento e arredondamento dao 95, entao `94` e `96` continuam
+        # reprovados.
         for scale in range(1, len(source.lstrip("-")) + 1):
             step = 10**scale
-            if (number + step // 2) // step == value:
+            if number // step == value or (number + step // 2) // step == value:
                 return True
 
     return False

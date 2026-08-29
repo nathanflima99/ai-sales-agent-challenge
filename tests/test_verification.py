@@ -154,6 +154,18 @@ def test_the_date_exemption_is_positional_not_by_value():
     assert check("Houve 31 vendas em 31/12/2012.", set()) == ["31"]
 
 
+def test_truncated_narration_is_accepted():
+    """Caso real: a resposta escreveu "953 milhões" para 953.531.302.
+
+    Truncar é tão honesto quanto arredondar, e uma versão que só aceitava o
+    arredondado (954) reprovava a narração correta.
+    """
+    results = numbers_in_payload({"rows": [{"total": 953531302}]})
+
+    assert check("Foram 953 milhões de unidades.", results) == []
+    assert check("Foram 954 milhões de unidades.", results) == []
+
+
 def test_rounding_that_grows_a_digit():
     """`99512506` narrado como `100 milhões` cresce de dois para três dígitos."""
     results = numbers_in_payload({"rows": [{"total": 99512506}]})
