@@ -13,9 +13,12 @@ Dois providers hoje:
 """
 
 import logging
+from collections.abc import Generator
 from typing import Literal
 
+import httpx
 from langchain_core.language_models import BaseChatModel
+from pydantic import SecretStr
 
 from app.config import Settings
 from app.errors import LLMNotConfiguredError
@@ -23,6 +26,30 @@ from app.errors import LLMNotConfiguredError
 logger = logging.getLogger(__name__)
 
 Provider = Literal["openai", "ollama"]
+
+
+class BearerAuth(httpx.Auth):
+    """Injeta `Authorization: Bearer` sem guardar o token em texto plano.
+
+    Passar `client_kwargs={"headers": {...}}` funciona, mas materializa a chave
+    numa string comum dentro do `ChatOllama` — e ela reaparece em `repr(model)`,
+    anulando a proteção que o `SecretStr` dá ao `Settings`. Bastaria um
+    `logger.debug` com o objeto, ou o modo verboso do LangChain, para vazá-la.
+
+    Mantendo o `SecretStr` aqui dentro, o token só é materializado no momento de
+    assinar a requisição, e o `repr` desta classe não o expõe.
+    """
+
+    def __init__(self, token: SecretStr) -> None:
+        self._token = token
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        request.headers["Authorization"] = f"Bearer {self._token.get_secret_value()}"
+        yield request
+
+    def __repr__(self) -> str:
+        return "<BearerAuth masked>"
+
 
 #: Modelos Ollama sem suporte a tool calling não conseguem operar este agente:
 #: sem tool call ele nunca consulta o DuckDB e não tem como responder.
@@ -91,11 +118,12 @@ def _build_ollama(settings: Settings) -> BaseChatModel:
             "OLLAMA_API_KEY is required when OLLAMA_BASE_URL points to https://ollama.com."
         )
 
-    client_kwargs: dict[str, object] = {}
+    # O ChatOllama não expõe `timeout`; o valor vai pelo cliente httpx que ele
+    # constrói. Sem isto, `LLM_TIMEOUT_SECONDS` valeria só para a OpenAI, e uma
+    # requisição pendurada seguraria uma thread do pool do FastAPI sem limite.
+    client_kwargs: dict[str, object] = {"timeout": settings.llm_timeout_seconds}
     if settings.ollama_api_key is not None:
-        client_kwargs["headers"] = {
-            "Authorization": f"Bearer {settings.ollama_api_key.get_secret_value()}"
-        }
+        client_kwargs["auth"] = BearerAuth(settings.ollama_api_key)
 
     logger.info(
         "using ollama model",
