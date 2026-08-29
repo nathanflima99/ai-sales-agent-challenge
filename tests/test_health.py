@@ -33,7 +33,7 @@ def test_settings_defaults_without_api_key():
 
     assert settings.openai_api_key is None
     assert settings.llm_configured is False
-    assert settings.max_agent_turns == 6
+    assert settings.max_agent_turns == 15
 
 
 def test_api_key_is_not_exposed_by_repr():
