@@ -105,6 +105,20 @@ def test_date_components_are_not_claims():
     assert check("O período vai de 01/01/2012 a 31/12/2012.", set()) == []
 
 
+def test_a_ratio_is_not_masked_as_a_date():
+    """`60/30/10` tem forma de data e não é uma.
+
+    Sem validar o calendário, a máscara escondia as três alegações antes da
+    verificação, e a resposta passava como verificada.
+    """
+    assert sorted(check("A composição foi 60/30/10.", set())) == ["10", "30", "60"]
+
+
+def test_both_date_orders_are_recognized():
+    """O CSV traz DD/MM/YYYY e o DuckDB devolve YYYY-MM-DD."""
+    assert check("De 2012-01-01 até 31/12/2012.", set()) == []
+
+
 def test_the_date_exemption_is_positional_not_by_value():
     """Mascarar a data, não liberar o valor dela.
 
@@ -112,6 +126,13 @@ def test_the_date_exemption_is_positional_not_by_value():
     aparecia numa data ao lado.
     """
     assert check("Houve 31 vendas em 31/12/2012.", set()) == ["31"]
+
+
+def test_rounding_that_grows_a_digit():
+    """`99512506` narrado como `100 milhões` cresce de dois para três dígitos."""
+    results = numbers_in_payload({"rows": [{"total": 99512506}]})
+
+    assert check("Foram cerca de 100 milhões.", results) == []
 
 
 def test_profile_facts_count_as_query_evidence():

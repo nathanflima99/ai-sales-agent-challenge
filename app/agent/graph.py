@@ -82,15 +82,7 @@ class SalesAgent:
         self._tools_by_name = {tool.name: tool for tool in tools}
         self._model = model.bind_tools(tools)
         self._system_prompt = build_system_prompt(profile)
-        # O perfil do dataset é resultado de consulta: `build_profile` roda SQL
-        # contra a mesma view no startup. Semear a evidência com ele é literal —
-        # quando o modelo cita as 203.635 linhas, esse número veio mesmo do
-        # banco, só que numa consulta anterior à pergunta.
-        #
-        # Isto é diferente de isentar contexto da verificação: aqui não há
-        # exceção, há evidência. `numbers_verified` continua significando "todo
-        # número citado saiu de uma consulta".
-        self._profile_numbers = _profile_evidence(profile)
+        self._profile_facts = _profile_evidence(profile)
         self._settings = settings
         self._graph = self._build_graph()
 
@@ -403,10 +395,20 @@ class SalesAgent:
                 HumanMessage(content=question),
             ],
             "turns": 0,
-            "trace": [],
+            # O perfil entra como primeira chamada do trace, com o SQL que o
+            # produziu. Assim a evidência é reconferível à mão, como qualquer
+            # outra — evidência invisível não serviria de evidência.
+            "trace": [
+                ToolTrace(
+                    name="dataset_profile",
+                    args=dict(self._profile_facts),
+                    status="ok",
+                    sql=PROFILE_SQL,
+                    row_count=1,
+                )
+            ],
             "final": None,
-            # O perfil já é resultado de consulta; ver `_profile_evidence`.
-            "result_numbers": list(self._profile_numbers),
+            "result_numbers": sorted(numbers_in_payload(self._profile_facts)),
             "numbers_verified": True,
         }
 
@@ -448,23 +450,35 @@ class SalesAgent:
         return result
 
 
-def _profile_evidence(profile: DatasetProfile) -> set[str]:
-    """Números do perfil do dataset, que são resultado de consulta.
+#: SQL equivalente ao que `build_profile` executa para os fatos que vão ao
+#: prompt. Vai no trace para que a evidência seja reconferível: um número
+#: aprovado contra evidência invisível quebraria justamente o que o trace serve
+#: para garantir.
+PROFILE_SQL = (
+    "SELECT COUNT(*) AS rows, COUNT(DISTINCT product_id) AS products, "
+    "COUNT(DISTINCT local) AS locations FROM sales"
+)
+
+
+def _profile_evidence(profile: DatasetProfile) -> dict[str, int]:
+    """Fatos do perfil que o system prompt informa ao modelo.
 
     `build_profile` roda SQL contra a mesma view no startup, então estes valores
     têm a mesma procedência de qualquer outro do trace — só foram obtidos antes
-    da pergunta. Sem isto, citar as 203.635 linhas informadas no próprio prompt
-    seria tratado como número inventado: aconteceu duas vezes numa medição de 32
-    execuções, gastando um turno cada.
+    da pergunta. Sem eles na evidência, citar as 203.635 linhas informadas no
+    próprio prompt vira número inventado: aconteceu duas vezes numa medição de
+    32 execuções, gastando um turno cada.
+
+    Apenas o que o prompt **declara**. Uma versão anterior semeava também as
+    contagens de promoção e de nulos, que não aparecem no prompt — e aí as 12
+    linhas `Flash` autorizariam uma alegação de `12%` sem consulta nenhuma.
+    Evidência precisa ser estreita para significar alguma coisa.
     """
-    facts: list[object] = [
-        profile.row_count,
-        profile.product_count,
-        len(profile.locations),
-        *profile.promotion_types.values(),
-        *profile.null_counts.values(),
-    ]
-    return numbers_in_payload(facts)
+    return {
+        "rows": profile.row_count,
+        "products": profile.product_count,
+        "locations": len(profile.locations),
+    }
 
 
 def _text_of(message: AIMessage) -> str:

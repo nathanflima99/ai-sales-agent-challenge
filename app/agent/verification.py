@@ -108,55 +108,84 @@ def numbers_in_payload(payload: Any) -> set[str]:
 def _is_rounding_of(candidate: str, known: set[str]) -> bool:
     """Aceita narracao arredondada de um valor que veio do banco.
 
-    Cobre os dois sentidos:
+    A comparacao e aritmetica, nao textual: o valor da fonte e arredondado em
+    cada casa decimal e comparado com o candidato. Duas tentativas anteriores
+    falharam por mexer em string:
 
-    - truncamento: `95,1 milhoes` narrando `95.112.506`;
-    - arredondamento para cima: `96` narrando `95.512.506`.
+    - prefixo simples nao aceitava arredondamento para cima (`96` de 95.512.506);
+    - prefixo com tolerancia de 1 aceitava demais, validando `94` e `96` para o
+      mesmo 95.112.506, quando so `95` esta certo;
+    - e prefixo com carry quebrava quando o arredondamento cresce um digito:
+      `100 milhoes` narrando 99.512.506 nao tem prefixo em comum nenhum.
 
-    O que decide entre os dois e o **digito descartado**, nao uma tolerancia.
-    Aceitar "diferenca de 1" no prefixo validava tanto `94 milhoes` quanto
-    `96 milhoes` para 95.112.506, e nenhum dos dois e o arredondamento correto.
-
-    Entao: o prefixo bate exatamente, ou bate depois de somar 1 E o primeiro
-    digito descartado e >= 5. `4305470` contra `4295470` falha nas duas
-    condicoes e continua reprovado.
+    Arredondar de verdade resolve os tres. `4305470` contra `4295470` nao e
+    resultado de arredondamento em nenhuma casa e continua reprovado.
 
     O sinal precisa bater; ignora-lo deixaria passar a inversao.
+
+    Limitacao aceita: como so comparamos digitos, a magnitude escrita por extenso
+    ("milhoes") se perde, entao um candidato muito curto pode casar por uma casa
+    improvavel. O risco e pequeno perto do de reprovar narracao honesta.
     """
     negative = candidate.startswith("-")
-    digits = candidate.lstrip("-")
+    value = int(candidate.lstrip("-"))
 
     for source in known:
         if source.startswith("-") != negative:
             continue
-        source_digits = source.lstrip("-")
-        if len(source_digits) <= len(digits):
-            continue
+        number = int(source.lstrip("-"))
 
-        kept = source_digits[: len(digits)]
-        if kept == digits:
-            return True
-
-        first_discarded = source_digits[len(digits)]
-        if first_discarded >= "5" and str(int(kept) + 1) == digits:
-            return True
+        # Cada escala e uma casa decimal descartada. `95.112.506` arredondado na
+        # casa do milhao da 95; na casa da centena de milhar, 951.
+        for scale in range(1, len(source.lstrip("-")) + 1):
+            step = 10**scale
+            if (number + step // 2) // step == value:
+                return True
 
     return False
 
 
-#: Datas escritas por extenso ou em formato ISO. Os componentes delas nao sao
-#: alegacoes numericas: o `31` de `31/12/2012` nao e uma conta.
-_DATE = re.compile(r"\d{1,4}[/-]\d{1,2}[/-]\d{1,4}")
+#: Candidatos a data, validados depois contra o calendario. Casar so pela forma
+#: era largo demais: `60/30/10` e uma razao, nao uma data, e mascara-la escondia
+#: tres alegacoes nao verificadas.
+_DATE_SHAPED = re.compile(r"\d{1,4}[/-]\d{1,2}[/-]\d{1,4}")
+
+
+def _is_calendar_date(text: str) -> bool:
+    """Confere se o trecho e mesmo uma data, nas duas ordens usadas aqui.
+
+    O CSV traz `DD/MM/YYYY` e o DuckDB devolve `YYYY-MM-DD`, entao as duas
+    aparecem em resposta. Basta uma das leituras fazer sentido.
+    """
+    parts = re.split(r"[/-]", text)
+    if len(parts) != 3:
+        return False
+    try:
+        first, second, third = (int(p) for p in parts)
+    except ValueError:
+        return False
+
+    day_first = 1 <= first <= 31 and 1 <= second <= 12 and third in YEAR_RANGE
+    year_first = first in YEAR_RANGE and 1 <= second <= 12 and 1 <= third <= 31
+    return day_first or year_first
 
 
 def mask_dates(text: str) -> str:
     """Remove as datas do texto antes de extrair as alegacoes.
 
-    Isentar por valor era largo demais: numa resposta como "Houve 31 vendas em
-    31/12/2012", o `31` da data liberava tambem o `31` da contagem. Mascarar o
-    trecho isenta so a ocorrencia que e mesmo uma data.
+    Duas precisoes que custaram um apontamento cada:
+
+    - Isentar por valor era largo demais: em "Houve 31 vendas em 31/12/2012", o
+      `31` da data liberava tambem o `31` da contagem. Por isso mascara o trecho,
+      nao o valor.
+    - Casar so pela forma tambem era: `60/30/10` vira data e some inteiro. Por
+      isso o trecho e validado contra o calendario antes de ser mascarado.
     """
-    return _DATE.sub(" ", text or "")
+
+    def replace(match: re.Match[str]) -> str:
+        return " " if _is_calendar_date(match.group()) else match.group()
+
+    return _DATE_SHAPED.sub(replace, text or "")
 
 
 def unverified_numbers(
