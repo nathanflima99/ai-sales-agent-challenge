@@ -1,6 +1,6 @@
 # AI Sales Agent Challenge — Plano de Implementação
 
-> **v2 — corrigido contra o dataset real e o enunciado oficial (`README.pdf`).**
+> **v2 — corrigido contra o dataset real e o enunciado oficial (`ENUNCIADO.pdf`).**
 > Todos os fatos de dataset abaixo foram verificados executando SQL no DuckDB 1.5.5
 > sobre `dataset/sales.csv`. Nada aqui é suposição.
 
@@ -16,7 +16,7 @@ Entrega: repositório público no GitHub, com README, Dockerfile e testes.
 
 ## O que o enunciado pede (checklist literal)
 
-Do `README.pdf` do desafio:
+Do `ENUNCIADO.pdf` do desafio:
 
 | # | Requisito | Onde é atendido |
 |---|---|---|
@@ -217,7 +217,7 @@ ai-sales-agent-challenge/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── pyproject.toml
-├── README.pdf                 # enunciado original, mantido para contexto
+├── ENUNCIADO.pdf              # enunciado original, mantido para contexto
 └── README.md
 ```
 
@@ -727,7 +727,7 @@ curl localhost:8000/health
 3. `0003-sqlglot-ast-validation.md`
 4. `0004-tools-vs-prompt.md` — critério de quando algo vira tool; por que `submit_answer` existe
 5. `0005-no-pandas-csv-agent.md` — **o mais importante**
-6. `0006-golden-set-evaluation.md`
+6. `0006-testing-a-nondeterministic-system.md`
 
 > **ADR 0005 é o de maior valor na entrevista.** O caminho óbvio dentro do LangChain para "agente que analisa CSV" é `create_csv_agent` / `create_pandas_dataframe_agent`. Ambos funcionam executando **Python gerado pelo LLM** via `PythonAstREPLTool`. Isso significa `exec` de código de modelo no processo da aplicação — RCE por construção, com `allow_dangerous_code=True` exigido explicitamente pela própria lib. Escolhi o caminho mais longo: o LLM gera **SQL**, que passa por validação de AST e roda num motor somente-leitura com uma única tabela exposta. Usar a biblioteca sem usar o atalho inseguro dela, e saber explicar a diferença, é o ponto do ADR.
 

@@ -3,7 +3,7 @@
 ## Contexto
 
 Agente de IA que responde perguntas em linguagem natural sobre `dataset/sales.csv`.
-Desafio técnico; o enunciado original está em `README.pdf`.
+Desafio técnico; o enunciado original está em `ENUNCIADO.pdf`.
 
 **O plano de implementação (`IMPLEMENTATION_PLAN.md`) é a fonte de verdade** para
 arquitetura, fases, escopo e critérios de aceite. Antes de propor mudança estrutural,
