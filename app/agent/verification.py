@@ -108,16 +108,18 @@ def numbers_in_payload(payload: Any) -> set[str]:
 def _is_rounding_of(candidate: str, known: set[str]) -> bool:
     """Aceita narracao arredondada de um valor que veio do banco.
 
-    Cobre os dois sentidos, e a diferenca entre eles custou uma rodada inteira
-    de falso positivo para aparecer:
+    Cobre os dois sentidos:
 
     - truncamento: `95,1 milhoes` narrando `95.112.506`;
-    - arredondamento para cima: `154.354.899.660` narrando `154354899659.2`.
+    - arredondamento para cima: `96` narrando `95.512.506`.
 
-    A regra e comparar os digitos do candidato com os primeiros digitos da fonte
-    e aceitar diferenca de no maximo 1, que e o carry maximo de um arredondamento
-    na ultima casa mantida. Uma diferenca maior nao e arredondamento, e outro
-    numero: `4305470` contra `4295470` difere em 10.000 e continua reprovado.
+    O que decide entre os dois e o **digito descartado**, nao uma tolerancia.
+    Aceitar "diferenca de 1" no prefixo validava tanto `94 milhoes` quanto
+    `96 milhoes` para 95.112.506, e nenhum dos dois e o arredondamento correto.
+
+    Entao: o prefixo bate exatamente, ou bate depois de somar 1 E o primeiro
+    digito descartado e >= 5. `4305470` contra `4295470` falha nas duas
+    condicoes e continua reprovado.
 
     O sinal precisa bater; ignora-lo deixaria passar a inversao.
     """
@@ -130,8 +132,15 @@ def _is_rounding_of(candidate: str, known: set[str]) -> bool:
         source_digits = source.lstrip("-")
         if len(source_digits) <= len(digits):
             continue
-        if abs(int(source_digits[: len(digits)]) - int(digits)) <= 1:
+
+        kept = source_digits[: len(digits)]
+        if kept == digits:
             return True
+
+        first_discarded = source_digits[len(digits)]
+        if first_discarded >= "5" and str(int(kept) + 1) == digits:
+            return True
+
     return False
 
 
@@ -140,12 +149,14 @@ def _is_rounding_of(candidate: str, known: set[str]) -> bool:
 _DATE = re.compile(r"\d{1,4}[/-]\d{1,2}[/-]\d{1,4}")
 
 
-def date_component_numbers(text: str) -> set[str]:
-    """Numeros que so aparecem como parte de uma data."""
-    found: set[str] = set()
-    for match in _DATE.finditer(text or ""):
-        found |= numbers_in(match.group().replace("-", " ").replace("/", " "))
-    return found
+def mask_dates(text: str) -> str:
+    """Remove as datas do texto antes de extrair as alegacoes.
+
+    Isentar por valor era largo demais: numa resposta como "Houve 31 vendas em
+    31/12/2012", o `31` da data liberava tambem o `31` da contagem. Mascarar o
+    trecho isenta so a ocorrencia que e mesmo uma data.
+    """
+    return _DATE.sub(" ", text or "")
 
 
 def unverified_numbers(
@@ -173,16 +184,13 @@ def unverified_numbers(
     - arredondamentos de um valor que veio de consulta.
     """
     allowed = numbers_in(question) | (context_numbers or set())
-    from_dates = date_component_numbers(claims)
     unverified: list[str] = []
 
-    for candidate in sorted(numbers_in(claims), key=len, reverse=True):
+    for candidate in sorted(numbers_in(mask_dates(claims)), key=len, reverse=True):
         digits = candidate.lstrip("-")
         if len(digits) < MIN_DIGITS:
             continue
         if candidate in result_numbers or candidate in allowed:
-            continue
-        if candidate in from_dates:
             continue
         if len(digits) == 4 and int(digits) in YEAR_RANGE:
             continue

@@ -26,7 +26,6 @@ from app.agent.state import AgentState, ToolTrace
 from app.agent.tools import SUBMIT_ANSWER, FinalAnswer, normalize_text_list
 from app.agent.verification import (
     correction_message,
-    numbers_in,
     numbers_in_payload,
     unverified_numbers,
 )
@@ -83,10 +82,15 @@ class SalesAgent:
         self._tools_by_name = {tool.name: tool for tool in tools}
         self._model = model.bind_tools(tools)
         self._system_prompt = build_system_prompt(profile)
-        # Números que o próprio sistema deu ao modelo: contagem de linhas, de
-        # produtos, período. Citar contexto não é inventar, e reprová-los enchia
-        # o trace de ruído sem apontar risco nenhum.
-        self._context_numbers = numbers_in(self._system_prompt)
+        # O perfil do dataset é resultado de consulta: `build_profile` roda SQL
+        # contra a mesma view no startup. Semear a evidência com ele é literal —
+        # quando o modelo cita as 203.635 linhas, esse número veio mesmo do
+        # banco, só que numa consulta anterior à pergunta.
+        #
+        # Isto é diferente de isentar contexto da verificação: aqui não há
+        # exceção, há evidência. `numbers_verified` continua significando "todo
+        # número citado saiu de uma consulta".
+        self._profile_numbers = _profile_evidence(profile)
         self._settings = settings
         self._graph = self._build_graph()
 
@@ -266,12 +270,7 @@ class SalesAgent:
         perguntou; o campo permite ao cliente decidir sem interpretar prosa.
         """
         claims = "\n".join([final.answer, *final.assumptions, *final.warnings])
-        unverified = unverified_numbers(
-            claims,
-            state["question"],
-            set(state["result_numbers"]),
-            self._context_numbers,
-        )
+        unverified = unverified_numbers(claims, state["question"], set(state["result_numbers"]))
 
         if not unverified:
             # Uma entrada `ok` explícita registra que a verificação rodou. Sem
@@ -406,7 +405,8 @@ class SalesAgent:
             "turns": 0,
             "trace": [],
             "final": None,
-            "result_numbers": [],
+            # O perfil já é resultado de consulta; ver `_profile_evidence`.
+            "result_numbers": list(self._profile_numbers),
             "numbers_verified": True,
         }
 
@@ -446,6 +446,25 @@ class SalesAgent:
             },
         )
         return result
+
+
+def _profile_evidence(profile: DatasetProfile) -> set[str]:
+    """Números do perfil do dataset, que são resultado de consulta.
+
+    `build_profile` roda SQL contra a mesma view no startup, então estes valores
+    têm a mesma procedência de qualquer outro do trace — só foram obtidos antes
+    da pergunta. Sem isto, citar as 203.635 linhas informadas no próprio prompt
+    seria tratado como número inventado: aconteceu duas vezes numa medição de 32
+    execuções, gastando um turno cada.
+    """
+    facts: list[object] = [
+        profile.row_count,
+        profile.product_count,
+        len(profile.locations),
+        *profile.promotion_types.values(),
+        *profile.null_counts.values(),
+    ]
+    return numbers_in_payload(facts)
 
 
 def _text_of(message: AIMessage) -> str:

@@ -71,15 +71,19 @@ def test_rounded_narration_is_accepted():
     assert check("Foram cerca de 95,1 milhões de unidades.", results) == []
 
 
-def test_rounding_up_is_accepted():
-    """Arredondar para cima é narração honesta, e truncar não cobre esse caso.
+def test_rounding_up_is_accepted_only_in_the_right_direction():
+    """Quem decide é o dígito descartado, não uma tolerância.
 
-    Falso positivo real medido: o banco devolveu 154354899659.2 e a resposta
-    narrou 154.354.899.660.
+    Uma tolerância de 1 no prefixo validava `94 milhões` e `96 milhões` para o
+    mesmo 95.112.506 — e nenhum dos dois é o arredondamento correto.
     """
-    results = numbers_in_payload({"rows": [{"faturamento": 154354899659.2}]})
+    de_95_5 = numbers_in_payload({"rows": [{"total": 95512506}]})
+    assert check("Foram cerca de 96 milhões.", de_95_5) == []  # 95|5... arredonda pra 96
 
-    assert check("O faturamento foi 154.354.899.660.", results) == []
+    de_95_1 = numbers_in_payload({"rows": [{"total": 95112506}]})
+    assert check("Foram cerca de 95 milhões.", de_95_1) == []  # truncamento
+    assert check("Foram cerca de 96 milhões.", de_95_1) == ["96"]  # 95|1... não sobe
+    assert check("Foram cerca de 94 milhões.", de_95_1) == ["94"]  # nem desce
 
 
 def test_a_different_number_is_not_a_rounding():
@@ -101,17 +105,26 @@ def test_date_components_are_not_claims():
     assert check("O período vai de 01/01/2012 a 31/12/2012.", set()) == []
 
 
-def test_numbers_given_in_the_prompt_are_context_not_claims():
-    """Citar o que o sistema informou não é inventar.
+def test_the_date_exemption_is_positional_not_by_value():
+    """Mascarar a data, não liberar o valor dela.
 
-    Falso positivo real: `203635`, a contagem de linhas que está no system
-    prompt, foi reprovada duas vezes.
+    Isentar por valor deixava passar o `31` da contagem só porque o mesmo 31
+    aparecia numa data ao lado.
+    """
+    assert check("Houve 31 vendas em 31/12/2012.", set()) == ["31"]
+
+
+def test_profile_facts_count_as_query_evidence():
+    """Os números do perfil vêm de SQL, só que rodado no startup.
+
+    O agente semeia a evidência com eles, então citar as 203.635 linhas não é
+    exceção à regra — é um número que veio mesmo do banco. Falso positivo real:
+    reprovado duas vezes numa medição de 32 execuções.
     """
     unverified = unverified_numbers(
         "O dataset tem 203.635 linhas e 1.966 produtos.",
         "Pergunta",
-        set(),
-        context_numbers={"203635", "1966"},
+        result_numbers={"203635", "1966"},
     )
 
     assert unverified == []
