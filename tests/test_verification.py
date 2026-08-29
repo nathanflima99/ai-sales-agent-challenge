@@ -71,6 +71,52 @@ def test_rounded_narration_is_accepted():
     assert check("Foram cerca de 95,1 milhões de unidades.", results) == []
 
 
+def test_rounding_up_is_accepted():
+    """Arredondar para cima é narração honesta, e truncar não cobre esse caso.
+
+    Falso positivo real medido: o banco devolveu 154354899659.2 e a resposta
+    narrou 154.354.899.660.
+    """
+    results = numbers_in_payload({"rows": [{"faturamento": 154354899659.2}]})
+
+    assert check("O faturamento foi 154.354.899.660.", results) == []
+
+
+def test_a_different_number_is_not_a_rounding():
+    """A tolerância é de 1 no último dígito mantido, não uma licença.
+
+    `4305470` contra `4295470` difere em 10.000 — é o bug original, não
+    arredondamento.
+    """
+    results = numbers_in_payload({"rows": [{"diferenca": 4295470}]})
+
+    assert check("A diferença é 4.305.470.", results) == ["4305470"]
+
+
+def test_date_components_are_not_claims():
+    """O `31` de `31/12/2012` não é uma conta.
+
+    Falso positivo real: reprovado três vezes numa medição de 32 execuções.
+    """
+    assert check("O período vai de 01/01/2012 a 31/12/2012.", set()) == []
+
+
+def test_numbers_given_in_the_prompt_are_context_not_claims():
+    """Citar o que o sistema informou não é inventar.
+
+    Falso positivo real: `203635`, a contagem de linhas que está no system
+    prompt, foi reprovada duas vezes.
+    """
+    unverified = unverified_numbers(
+        "O dataset tem 203.635 linhas e 1.966 produtos.",
+        "Pergunta",
+        set(),
+        context_numbers={"203635", "1966"},
+    )
+
+    assert unverified == []
+
+
 def test_identifiers_with_digits_are_not_numeric_claims():
     """`Product_1359` é um nome, não uma conta."""
     assert check("Product_1359 foi o mais vendido.", set()) == []

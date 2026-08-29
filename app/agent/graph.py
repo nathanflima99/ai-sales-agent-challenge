@@ -24,7 +24,12 @@ from langgraph.graph import END, StateGraph
 from app.agent.prompts import build_system_prompt
 from app.agent.state import AgentState, ToolTrace
 from app.agent.tools import SUBMIT_ANSWER, FinalAnswer, normalize_text_list
-from app.agent.verification import correction_message, numbers_in_payload, unverified_numbers
+from app.agent.verification import (
+    correction_message,
+    numbers_in,
+    numbers_in_payload,
+    unverified_numbers,
+)
 from app.analytics.profiling import DatasetProfile
 from app.config import Settings
 from app.errors import AgentLoopError, AppError, LLMError
@@ -78,6 +83,10 @@ class SalesAgent:
         self._tools_by_name = {tool.name: tool for tool in tools}
         self._model = model.bind_tools(tools)
         self._system_prompt = build_system_prompt(profile)
+        # Números que o próprio sistema deu ao modelo: contagem de linhas, de
+        # produtos, período. Citar contexto não é inventar, e reprová-los enchia
+        # o trace de ruído sem apontar risco nenhum.
+        self._context_numbers = numbers_in(self._system_prompt)
         self._settings = settings
         self._graph = self._build_graph()
 
@@ -257,7 +266,12 @@ class SalesAgent:
         perguntou; o campo permite ao cliente decidir sem interpretar prosa.
         """
         claims = "\n".join([final.answer, *final.assumptions, *final.warnings])
-        unverified = unverified_numbers(claims, state["question"], set(state["result_numbers"]))
+        unverified = unverified_numbers(
+            claims,
+            state["question"],
+            set(state["result_numbers"]),
+            self._context_numbers,
+        )
 
         if not unverified:
             # Uma entrada `ok` explícita registra que a verificação rodou. Sem
@@ -274,7 +288,14 @@ class SalesAgent:
             error=f"Numbers not found in any query result: {', '.join(unverified)}",
         )
 
-        if state["turns"] < self._settings.max_agent_turns:
+        # Uma tentativa, não a cota inteira. Medido com qwen3.5:4b: o mesmo
+        # número foi reprovado nos turnos 2, 4 e 5 da mesma execução — o modelo
+        # foi avisado três vezes e não corrigiu. Insistir triplicava a latência
+        # sem mudar a resposta. A trava vale como detector; a correção, quando
+        # acontece, acontece na primeira tentativa.
+        already_retried = any(entry.name == "number_check" for entry in state["trace"])
+
+        if not already_retried and state["turns"] < self._settings.max_agent_turns:
             logger.warning(
                 "answer cites numbers no query returned, asking for a correction",
                 extra={"unverified": unverified, "turns": state["turns"]},

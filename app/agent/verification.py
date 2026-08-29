@@ -106,45 +106,83 @@ def numbers_in_payload(payload: Any) -> set[str]:
 
 
 def _is_rounding_of(candidate: str, known: set[str]) -> bool:
-    """Aceita `95,1 milhoes` como narracao de `95.112.506`.
+    """Aceita narracao arredondada de um valor que veio do banco.
 
-    Um arredondamento e um prefixo dos digitos do valor original, com o mesmo
-    sinal. Exigir os digitos exatos transformaria toda narracao aproximada em
-    falso positivo; ignorar o sinal deixaria passar a inversao.
+    Cobre os dois sentidos, e a diferenca entre eles custou uma rodada inteira
+    de falso positivo para aparecer:
+
+    - truncamento: `95,1 milhoes` narrando `95.112.506`;
+    - arredondamento para cima: `154.354.899.660` narrando `154354899659.2`.
+
+    A regra e comparar os digitos do candidato com os primeiros digitos da fonte
+    e aceitar diferenca de no maximo 1, que e o carry maximo de um arredondamento
+    na ultima casa mantida. Uma diferenca maior nao e arredondamento, e outro
+    numero: `4305470` contra `4295470` difere em 10.000 e continua reprovado.
+
+    O sinal precisa bater; ignora-lo deixaria passar a inversao.
     """
     negative = candidate.startswith("-")
     digits = candidate.lstrip("-")
+
     for source in known:
         if source.startswith("-") != negative:
             continue
         source_digits = source.lstrip("-")
-        if len(source_digits) > len(digits) and source_digits.startswith(digits):
+        if len(source_digits) <= len(digits):
+            continue
+        if abs(int(source_digits[: len(digits)]) - int(digits)) <= 1:
             return True
     return False
 
 
-def unverified_numbers(claims: str, question: str, result_numbers: set[str]) -> list[str]:
+#: Datas escritas por extenso ou em formato ISO. Os componentes delas nao sao
+#: alegacoes numericas: o `31` de `31/12/2012` nao e uma conta.
+_DATE = re.compile(r"\d{1,4}[/-]\d{1,2}[/-]\d{1,4}")
+
+
+def date_component_numbers(text: str) -> set[str]:
+    """Numeros que so aparecem como parte de uma data."""
+    found: set[str] = set()
+    for match in _DATE.finditer(text or ""):
+        found |= numbers_in(match.group().replace("-", " ").replace("/", " "))
+    return found
+
+
+def unverified_numbers(
+    claims: str,
+    question: str,
+    result_numbers: set[str],
+    context_numbers: set[str] | None = None,
+) -> list[str]:
     """Devolve os numeros apresentados ao usuario que nenhuma consulta produziu.
 
     `claims` deve conter tudo que o usuario ve: resposta, premissas e ressalvas.
     Um numero inventado numa premissa engana tanto quanto um inventado na
     resposta.
 
+    `context_numbers` sao os numeros que o proprio sistema deu ao modelo, no
+    system prompt: contagem de linhas, de produtos, periodo. Citar contexto nao e
+    inventar, e reprova-los enchia o trace de ruido - o `203635` foi reprovado
+    duas vezes numa medicao de 32 execucoes.
+
     Ignora, por serem fonte de falso positivo e nao de risco:
 
     - numeros de um digito;
-    - anos;
-    - numeros que ja estavam na pergunta;
+    - anos e componentes de data;
+    - numeros que ja estavam na pergunta ou no contexto dado ao modelo;
     - arredondamentos de um valor que veio de consulta.
     """
-    from_question = numbers_in(question)
+    allowed = numbers_in(question) | (context_numbers or set())
+    from_dates = date_component_numbers(claims)
     unverified: list[str] = []
 
     for candidate in sorted(numbers_in(claims), key=len, reverse=True):
         digits = candidate.lstrip("-")
         if len(digits) < MIN_DIGITS:
             continue
-        if candidate in result_numbers or candidate in from_question:
+        if candidate in result_numbers or candidate in allowed:
+            continue
+        if candidate in from_dates:
             continue
         if len(digits) == 4 and int(digits) in YEAR_RANGE:
             continue
