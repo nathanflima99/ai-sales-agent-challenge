@@ -3,7 +3,7 @@
 import pytest
 from langchain_core.messages import AIMessage
 
-from app.agent.graph import FALLBACK_WARNING, SalesAgent
+from app.agent.graph import EMPTY_RESPONSE_NUDGE, FALLBACK_WARNING, SalesAgent
 from app.agent.prompts import build_system_prompt
 from app.agent.tools import build_tools
 from app.analytics.profiling import build_profile
@@ -37,7 +37,7 @@ def test_single_query_then_answer(make_agent):
             tool_call("query_sales_data", {"sql": TOTAL_SQL}),
             tool_call(
                 "submit_answer",
-                {"answer": "O total realizado foi 8181.", "assumptions": [], "warnings": []},
+                {"answer": "O total realizado foi 33978.", "assumptions": [], "warnings": []},
                 call_id="call_2",
             ),
         ]
@@ -45,7 +45,7 @@ def test_single_query_then_answer(make_agent):
 
     result = agent.run("Qual foi a quantidade total realizada?")
 
-    assert result.answer == "O total realizado foi 8181."
+    assert result.answer == "O total realizado foi 33978."
     assert result.turns == 2
     assert [t.name for t in result.trace] == ["query_sales_data", "submit_answer"]
     assert result.trace[0].status == "ok"
@@ -159,18 +159,92 @@ def test_prose_answer_without_submit_answer_is_still_delivered(make_agent):
 
 
 @pytest.mark.parametrize("content", ["", "   ", "\n\n"])
-def test_empty_response_fails_instead_of_returning_a_blank_answer(make_agent, content):
-    """Observado com qwen3.5:4b: sem tool call e sem texto.
+def test_empty_response_is_retried_and_then_answered(make_agent, content):
+    """Resposta vazia é transitória, não terminal.
 
-    Devolver HTTP 200 com `answer` vazia seria anunciar sucesso sem entregar
-    resposta — pior que falhar, porque o cliente não tem como perceber.
+    Medido com qwen3.5:4b: 6 de 32 execuções vieram sem tool call, sem texto e
+    sem raciocínio. Das 26 que responderam, 26 estavam corretas, então tratar o
+    vazio como falha descartava ~19% das perguntas por um soluço do modelo.
     """
-    agent = make_agent([AIMessage(content=content)])
+    agent = make_agent(
+        [
+            AIMessage(content=content),
+            tool_call("submit_answer", {"answer": "Consegui na segunda tentativa."}),
+        ]
+    )
 
-    with pytest.raises(AgentLoopError) as exc_info:
+    result = agent.run("Pergunta")
+
+    assert result.answer == "Consegui na segunda tentativa."
+    assert result.trace[0].name == "model_retry"
+
+
+def test_the_retry_asks_the_model_to_continue(sample_repository):
+    """O nudge existe para o contexto mudar.
+
+    Com `temperature=0`, reenviar o mesmo histórico convida a mesma resposta.
+    """
+    profile = build_profile(sample_repository.connection)
+    settings = Settings(_env_file=None, max_agent_turns=6, max_query_rows=50)
+    tools = build_tools(sample_repository, profile, settings)
+    model = ScriptedChatModel(
+        responses=[AIMessage(content=""), tool_call("submit_answer", {"answer": "ok"})]
+    )
+
+    SalesAgent(model, tools, profile, settings).run("Pergunta")
+
+    assert any(EMPTY_RESPONSE_NUDGE in str(m.content) for m in model.calls[1])
+
+
+def test_persistent_empty_responses_still_fail(make_agent):
+    """Um modelo que nunca responde precisa falhar, não girar para sempre."""
+    agent = make_agent([AIMessage(content="") for _ in range(10)], max_turns=3)
+
+    with pytest.raises(AgentLoopError):
         agent.run("Pergunta")
 
-    assert "without producing an answer" in str(exc_info.value)
+
+# --- trava contra o modelo fazer conta ----------------------------------------
+
+
+def test_answer_with_a_number_no_query_returned_is_sent_back(make_agent):
+    """O caso real: consultou as parcelas e subtraiu na resposta.
+
+    A primeira tentativa cita um número que nenhuma consulta devolveu; ele volta
+    ao modelo como observação, e a segunda tentativa cita só o que veio do banco.
+    """
+    agent = make_agent(
+        [
+            tool_call("query_sales_data", {"sql": TOTAL_SQL}),
+            tool_call("submit_answer", {"answer": "A diferença é 4305470."}, "c2"),
+            tool_call("submit_answer", {"answer": "O total é 33978."}, "c3"),
+        ]
+    )
+
+    result = agent.run("Qual a diferença?")
+
+    assert result.answer == "O total é 33978."
+    assert any(t.name == "number_check" and t.status == "error" for t in result.trace)
+
+
+def test_unverified_number_is_flagged_when_the_budget_runs_out(make_agent):
+    """Sem turnos para corrigir, a resposta sai marcada em vez de virar erro.
+
+    Uma resposta possivelmente imprecisa, dita como tal, serve melhor a quem
+    perguntou do que um 500.
+    """
+    agent = make_agent(
+        [
+            tool_call("query_sales_data", {"sql": TOTAL_SQL}),
+            tool_call("submit_answer", {"answer": "A diferença é 4305470."}, "c2"),
+        ],
+        max_turns=2,
+    )
+
+    result = agent.run("Qual a diferença?")
+
+    assert "4305470" in result.answer
+    assert any("não foram encontrados" in w for w in result.warnings)
 
 
 def test_provider_failure_becomes_a_domain_error(sample_repository):
@@ -227,14 +301,14 @@ def test_fallback_after_a_successful_query_is_flagged_but_kept(make_agent):
     agent = make_agent(
         [
             tool_call("query_sales_data", {"sql": TOTAL_SQL}),
-            AIMessage(content="O total realizado foi 8181."),
+            AIMessage(content="O total realizado foi 33978."),
         ]
     )
 
     result = agent.run("Qual o total?")
 
     assert result.data_queried is True
-    assert result.answer == "O total realizado foi 8181."
+    assert result.answer == "O total realizado foi 33978."
     assert FALLBACK_WARNING in result.warnings
     assert result.trace[-1].status == "error"
 
@@ -289,6 +363,19 @@ def test_system_prompt_warns_about_the_dataset_traps(sample_repository):
     assert "IS NOT NULL" in prompt
     assert "submit_answer" in prompt
     assert "assumptions" in prompt
+
+
+def test_system_prompt_pushes_derived_values_into_sql(sample_repository):
+    """A regra genérica "use a ferramenta" não bastou na prática.
+
+    Perguntado pela diferença entre planejado e realizado, o modelo consultou as
+    duas somas e subtraiu na resposta. A conta era o enunciado da pergunta, e
+    mesmo assim não foi para o SQL.
+    """
+    prompt = build_system_prompt(build_profile(sample_repository.connection))
+
+    assert "DERIVADOS" in prompt
+    assert "SUM(actual_quantity) - SUM(planned_quantity)" in prompt
 
 
 def test_system_prompt_does_not_leak_ground_truth_answers(sample_repository):
