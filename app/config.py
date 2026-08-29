@@ -51,7 +51,14 @@ class Settings(BaseSettings):
     dataset_path: Path = Path("dataset/sales.csv")
 
     max_query_rows: int = 100
-    max_agent_turns: int = 6
+
+    # 6 foi dimensionado quando o agente só tinha o retry de ferramenta. Depois
+    # entraram o retry de resposta vazia e o de verificação de números, e os três
+    # consomem do mesmo orçamento — a cota para trabalho útil encolheu sem o
+    # número ser reajustado. Medido: a pergunta de promoções, que já gastava 6
+    # turnos no melhor caso, estourou 10 quando os três dispararam na mesma
+    # execução.
+    max_agent_turns: int = 12
     llm_timeout_seconds: int = 30
 
     log_level: str = "INFO"

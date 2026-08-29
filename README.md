@@ -78,9 +78,13 @@ um Qwen 3.5 disponível para a conta.
 
 > O modelo Ollama **precisa suportar tool calling**. Um modelo sem esse suporte
 > nunca chama a ferramenta de consulta, então nunca toca o dataset e não tem como
-> responder. Confira antes com `ollama show <modelo>` quando estiver usando Ollama
-> local: a capacidade `tools` precisa estar listada. `gemma3:4b`, por exemplo,
-> **não** a tem.
+> responder. Confira antes com `ollama show <modelo>`: a capacidade `tools`
+> precisa estar listada. `gemma3:4b`, por exemplo, **não** a tem.
+>
+> Mas a lista é condição necessária, não suficiente. O `qwen2.5-coder:7b` declara
+> `tools` e mesmo assim não chamou ferramenta nenhuma em nove execuções — ver
+> [por que um modelo de 4B](#por-que-um-modelo-de-4b-e-não-o-maior-disponível).
+> Confirme com uma pergunta real e olhe `metadata.data_queried`.
 >
 > `qwen3.5:4b` foi validado ponta a ponta — ver
 > [Validação com modelo real](#validação-com-modelo-real).
@@ -217,7 +221,7 @@ Os padrões estão em `.env.example`.
 | `OLLAMA_THINKING` | `true` | Reasoning do Ollama. Desligar troca corretude por latência — ver [Thinking / reasoning](#thinking--reasoning) |
 | `DATASET_PATH` | `dataset/sales.csv` | |
 | `MAX_QUERY_ROWS` | `100` | Teto de linhas por consulta |
-| `MAX_AGENT_TURNS` | `6` | Cota de turnos do agente |
+| `MAX_AGENT_TURNS` | `12` | Cota de turnos. Retry de ferramenta, de resposta vazia e de verificação consomem do mesmo orçamento |
 | `LLM_TIMEOUT_SECONDS` | `30` | |
 | `LOG_LEVEL` | `INFO` | |
 
@@ -497,6 +501,38 @@ Os cinco primeiros casos são as perguntas de exemplo do enunciado. Em cada um o
 SQL escrito pelo agente foi **reexecutado pelo harness** e produziu o valor de
 ground truth — `Product_1359` / 95.112.506, `Whse_J` / 617.421.620, e assim por
 diante.
+
+### Por que um modelo de 4B, e não o maior disponível
+
+O servidor de teste tem uma **AMD RX 580 de 8 GB**. Isso define o teto: um modelo
+de 14B ocuparia ~9 GB e transbordaria para a CPU, e a latência — já em minutos —
+ficaria proibitiva. Só um modelo instalado era maior que o `qwen3.5:4b`, e ele
+foi medido no mesmo golden set:
+
+| | `qwen3.5:4b` | `qwen2.5-coder:7b` |
+|---|---|---|
+| Parâmetros | 4,7B | 7,6B |
+| Taxa de acerto | **8/8** | **1/8** |
+| Consultas ao dataset | sempre | **nunca** |
+| Tempo médio | ~130 s | 27 s |
+
+O modelo maior nunca chamou uma ferramenta. Nove execuções, zero consultas ao
+DuckDB, `data_queried: false` em todas — respondeu em prosa direto, com texto
+fluente e números plausíveis. É rápido porque não faz nada.
+
+Duas lições ficam daqui.
+
+**Declarar `tools` não é saber usar.** O `ollama show` lista a capacidade porque o
+template do modelo a suporta; se o modelo *decide* usá-la é outra coisa. É uma
+falha pior que a do `gemma3:4b`, que ao menos não declara — esta é silenciosa.
+
+**E é onde o `data_queried` se paga.** Sem ele, aquelas nove respostas passariam
+por legítimas: bem escritas, bem formatadas, com números da ordem de grandeza
+certa. Nove `data_queried: false` seguidos são um diagnóstico instantâneo.
+
+Para um modelo realmente maior, o caminho neste projeto não é hardware local e
+sim [Ollama Cloud](#com-ollama-cloud-sem-instalar-ollama-localmente), que remove
+o teto de VRAM.
 
 ### O que a trava de números mudou
 
