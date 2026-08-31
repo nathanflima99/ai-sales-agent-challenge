@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 
 _RETRY_HINT = "Fix the problem described above and call the tool again."
 
+#: Vazias seguidas toleradas antes de desistir. As seis ocorrências medidas se
+#: recuperaram na tentativa seguinte, então 3 cobre o soluço com folga; o que
+#: passa disso é modelo travado, e insistir só troca um erro rápido por um lento.
+MAX_CONSECUTIVE_EMPTY = 3
+
 #: Enviado quando o modelo devolve uma mensagem completamente vazia.
 EMPTY_RESPONSE_NUDGE = (
     "Your last message was empty. Please continue: either call a tool to query "
@@ -103,7 +108,11 @@ class SalesAgent:
             logger.exception("llm call failed")
             raise LLMError("The language model is unavailable right now.") from exc
 
-        return {"messages": [response], "turns": state["turns"] + 1}
+        update: dict[str, Any] = {"messages": [response], "turns": state["turns"] + 1}
+        if _has_content(response):
+            # Sequência quebrada: o modelo voltou a produzir algo.
+            update["consecutive_empty"] = 0
+        return update
 
     def _tools_node(self, state: AgentState) -> dict[str, Any]:
         """Executa as ferramentas pedidas, transformando falha em observação.
@@ -322,20 +331,39 @@ class SalesAgent:
         produziram resposta, 26 estavam corretas.
 
         Tratar isso como falha terminal descartava ~19% das perguntas por um
-        soluço do modelo. Aqui vira mais um caso de self-correction, com a cota
-        de turnos servindo de limite como já servia para erro de ferramenta.
+        soluço do modelo. Aqui vira mais um caso de self-correction.
 
         O nudge existe para o contexto mudar: com `temperature=0`, reenviar
         exatamente o mesmo histórico convida exatamente a mesma resposta.
+
+        **A cota de turnos não serve de limite aqui.** Foi o que eu supus, e uma
+        execução real mostrou o contrário: perguntado pelo produto menos vendido,
+        o modelo consultou o dataset e depois devolveu vazio catorze vezes
+        seguidas, até estourar os 15 turnos — 5min36s para chegar a um erro.
+
+        O que se recupera, recupera cedo: nas seis ocorrências medidas, a resposta
+        veio na tentativa seguinte. Depois de `MAX_CONSECUTIVE_EMPTY` vazias em
+        sequência o modelo não está soluçando, está travado, e insistir só adia
+        o erro. Falhar aqui devolve 503 em vez de 500, que é mais honesto: o
+        problema é o modelo estar indisponível, não o agente ter se perdido.
         """
+        seen = state.get("consecutive_empty", 0) + 1
+        if seen >= MAX_CONSECUTIVE_EMPTY:
+            logger.warning("model stuck on empty responses", extra={"attempts": seen})
+            raise LLMError(
+                f"The language model returned {seen} empty responses in a row and "
+                f"is not recovering."
+            )
+
         logger.warning("empty model response, asking again", extra={"turns": state["turns"]})
         return {
             "messages": [HumanMessage(content=EMPTY_RESPONSE_NUDGE)],
+            "consecutive_empty": seen,
             "trace": [
                 ToolTrace(
                     name="model_retry",
                     status="error",
-                    error="Model returned an empty response; asking again.",
+                    error=f"Model returned an empty response ({seen}); asking again.",
                 )
             ],
         }
@@ -395,6 +423,7 @@ class SalesAgent:
                 HumanMessage(content=question),
             ],
             "turns": 0,
+            "consecutive_empty": 0,
             # O perfil entra como primeira chamada do trace, com o SQL que o
             # produziu. Assim a evidência é reconferível à mão, como qualquer
             # outra — evidência invisível não serviria de evidência.
@@ -479,6 +508,18 @@ def _profile_evidence(profile: DatasetProfile) -> dict[str, int]:
         "products": profile.product_count,
         "locations": len(profile.locations),
     }
+
+
+def _has_content(message: BaseMessage) -> bool:
+    """O modelo produziu alguma coisa: uma tool call ou texto.
+
+    Mesma definição de vazio que `_route` usa para mandar ao `recover`; as duas
+    precisam concordar, senão o contador zera numa situação que o roteamento
+    ainda considera vazia.
+    """
+    if not isinstance(message, AIMessage):
+        return True
+    return bool(message.tool_calls) or bool(_text_of(message).strip())
 
 
 def _text_of(message: AIMessage) -> str:
