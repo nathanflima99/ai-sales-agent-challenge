@@ -52,3 +52,7 @@ class AgentState(TypedDict):
     #: a cota de turnos acabou antes de o modelo corrigir. Sobe para o metadata
     #: da API: permite ao cliente decidir sem interpretar o texto do aviso.
     numbers_verified: bool
+
+    #: Respostas vazias seguidas. Zera a cada resposta com conteúdo, porque o que
+    #: distingue um soluço de um modelo travado é a sequência, não o total.
+    consecutive_empty: int

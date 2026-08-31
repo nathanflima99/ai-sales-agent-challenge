@@ -342,6 +342,24 @@ validação mais abaixo, com o que mudou entre eles.
 responder a pergunta errada, e nenhuma verificação sintática pega isso. Ela
 garante rastreabilidade, não correção.
 
+Um caso concreto, capturado testando a aplicação à mão. Perguntado pelo produto
+mais vendido, o modelo escreveu no meio da investigação:
+
+```sql
+SELECT SUM(actual_quantity) AS total_vendas
+FROM sales, (SELECT product_id, SUM(actual_quantity) AS prod_total
+             FROM sales GROUP BY product_id) AS t
+WHERE t.product_id = 'Product_1359'
+```
+
+Falta o `JOIN ... ON`: é um produto cartesiano que cruza as 203.635 linhas com a
+única linha filtrada e devolve `953.555.461` — o total do dataset inteiro, não o
+do produto. **Nenhuma das duas travas teria impedido** a resposta de citar esse
+número: o SQL é válido, somente-leitura e na tabela permitida, então o guard
+aprova; e o valor veio mesmo de uma consulta, então a verificação de números
+aprova. Quem descartou foi o próprio modelo, que rodou a consulta certa em
+seguida. Deu certo por comportamento, não por garantia.
+
 ### O que este trace revela sobre modelos pequenos
 
 Nesta execução o modelo enviou `assumptions` como uma **string contendo JSON
@@ -604,8 +622,16 @@ dentro do container alcançando o túnel via `host.docker.internal`.
   Medido em 6 de 32 execuções. O agente pede outra tentativa; quando nem assim
   vem resposta, a requisição falha de forma controlada em vez de devolver HTTP
   200 com `answer` em branco. Não ocorreu nas 24 execuções finais, mas 24 não são
-  suficientes para dizer que sumiu — a cota maior dá mais espaço para a segunda
-  tentativa, e é provável que só tenha ficado mais raro.
+  suficientes para dizer que sumiu.
+
+  **E nem sempre é transitório.** Perguntado pelo produto menos vendido, o modelo
+  consultou o dataset e depois devolveu vazio **catorze vezes seguidas**, até
+  estourar a cota. Eu tinha suposto que a cota de turnos bastava de limite; ela
+  bastava para terminar, não para terminar rápido — foram 5min36s até o erro.
+  Hoje o agente desiste após 3 vazias consecutivas (`MAX_CONSECUTIVE_EMPTY`) e
+  responde 503, porque a essa altura o diagnóstico é modelo indisponível, não
+  agente perdido. O contador zera a cada resposta com conteúdo: o que denuncia
+  travamento é a sequência, não o total.
 - **Calcula de cabeça quando deveria consultar.** Perguntado pela diferença entre
   planejado e realizado, pediu as duas somas ao banco e subtraiu na resposta.
   É o que a trava de números detecta.
@@ -628,6 +654,16 @@ arquitetura; a máquina de teste roda em CPU, por falta de CUDA.
 **Sem memória entre perguntas.** Cada requisição é independente; não há follow-up
 ("e no ano anterior?"). O LangGraph resolve isso com `MemorySaver` e `thread_id`,
 mas em produção seria Redis, não memória de processo.
+
+**Empates não são declarados.** Perguntado pelo produto *menos* vendido, o agente
+escreve `ORDER BY total ASC LIMIT 1` — sintaticamente correto e analiticamente
+incompleto, porque **seis produtos empatam em 1 unidade** (`Product_0362`,
+`0612`, `0811`, `0812`, `1697`, `1698`). Sem critério de desempate, qual deles
+volta não é garantido nem entre execuções. A pergunta simétrica não tem esse
+problema — `Product_1359` lidera isolado por quase o dobro —, o que faz o caso
+passar despercebido em quem só testa o "mais vendido". O prompt trata ambiguidade
+de *definição* (vendas em quantidade ou faturamento); ambiguidade de *resultado*
+ele ainda não trata.
 
 **Duplicatas não tratadas.** Os 1.297 grupos idênticos são contados normalmente
 nas agregações. Decidir se são transações legítimas ou erro de ingestão exige

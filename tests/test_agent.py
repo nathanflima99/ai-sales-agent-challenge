@@ -209,12 +209,44 @@ def test_the_retry_asks_the_model_to_continue(sample_repository):
     assert any(EMPTY_RESPONSE_NUDGE in str(m.content) for m in model.calls[1])
 
 
-def test_persistent_empty_responses_still_fail(make_agent):
-    """Um modelo que nunca responde precisa falhar, não girar para sempre."""
-    agent = make_agent([AIMessage(content="") for _ in range(10)], max_turns=3)
+def test_persistent_empty_responses_fail_fast(make_agent):
+    """Um modelo travado precisa falhar rápido, não consumir a cota inteira.
 
-    with pytest.raises(AgentLoopError):
+    Eu supus que a cota de turnos bastava de limite. Não bastava: numa execução
+    real o modelo consultou o dataset e devolveu vazio catorze vezes seguidas
+    até estourar os 15 turnos, gastando 5min36s para chegar a um erro.
+
+    O que se recupera, recupera cedo. Depois de `MAX_CONSECUTIVE_EMPTY` seguidas
+    o diagnóstico é outro — modelo indisponível, e não agente perdido —, por isso
+    o erro é `LLMError` (503) e não `AgentLoopError` (500).
+    """
+    agent = make_agent([AIMessage(content="") for _ in range(30)], max_turns=15)
+
+    with pytest.raises(LLMError):
         agent.run("Pergunta")
+
+
+def test_the_empty_counter_resets_after_a_real_response(make_agent):
+    """Vazias espalhadas não somam: o que acusa modelo travado é a sequência.
+
+    Sem zerar, uma execução longa com soluços ocasionais atingiria o teto sem
+    nunca ter havido travamento — e perderia respostas que estavam vindo bem.
+    """
+    agent = make_agent(
+        [
+            AIMessage(content=""),
+            AIMessage(content=""),
+            tool_call("query_sales_data", {"sql": "SELECT COUNT(*) AS n FROM sales"}),
+            AIMessage(content=""),
+            AIMessage(content=""),
+            tool_call("submit_answer", {"answer": "Cheguei ao fim mesmo com soluços."}),
+        ],
+        max_turns=15,
+    )
+
+    result = agent.run("Pergunta")
+
+    assert result.answer == "Cheguei ao fim mesmo com soluços."
 
 
 # --- trava contra o modelo fazer conta ----------------------------------------
