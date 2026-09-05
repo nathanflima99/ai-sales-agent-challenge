@@ -1,0 +1,55 @@
+# Roda em cada PR o mesmo que se roda na máquina: formatação, lint, tipos e
+# testes. Antes disso, a garantia de qualidade do projeto dependia de alguém
+# rodar `pytest` local e relatar o resultado — quem revisasse tinha de acreditar.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Um push novo cancela a execução anterior do mesmo branch: revisar resultado de
+# commit que já foi substituído não ajuda ninguém.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # O pyproject declara `requires-python = ">=3.11"`. Testar as duas pontas
+        # é o que sustenta essa afirmação; desenvolvemos na 3.12.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Instalar dependências
+        run: pip install -e ".[dev]"
+
+      # Os testes de ground truth pulam sozinhos quando o CSV não está presente.
+      # Sem esta checagem, um dataset ausente deixaria a suíte verde sem ter
+      # conferido nenhum dos números conhecidos.
+      - name: Conferir que o dataset está presente
+        run: test -f dataset/sales.csv
+
+      - name: Formatação
+        run: ruff format --check .
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Tipos
+        run: mypy app
+
+      - name: Testes
+        run: pytest -q

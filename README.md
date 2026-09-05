@@ -1,5 +1,7 @@
 # AI Sales Agent
 
+[![CI](https://github.com/nathanflima99/ai-sales-agent-challenge/actions/workflows/ci.yml/badge.svg)](https://github.com/nathanflima99/ai-sales-agent-challenge/actions/workflows/ci.yml)
+
 Agente de IA que responde perguntas em linguagem natural sobre `dataset/sales.csv`
 (203.635 registros de vendas de 2012).
 
@@ -403,6 +405,18 @@ pytest
 ruff check . && ruff format --check .
 mypy
 ```
+
+Estes três comandos rodam em cada pull request e a cada push na `main`
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), em Python 3.11 e 3.12 —
+as duas pontas do `requires-python`, para que a compatibilidade declarada seja
+verificada e não apenas afirmada. O workflow também falha se `dataset/sales.csv`
+estiver ausente: os testes de ground truth pulam sozinhos sem o arquivo, e uma
+suíte verde sem eles não provaria nada.
+
+O golden set **não** entra na CI. Ele depende de um modelo real e o resultado
+varia entre execuções; virar check obrigatório o transformaria numa fonte de
+vermelho aleatório. É medição, não teste — a distinção está no
+[ADR 0006](docs/adr/0006-testing-a-nondeterministic-system.md).
 
 Com a aplicação de pé e um provider configurado, o golden set roda contra o modelo
 real:
