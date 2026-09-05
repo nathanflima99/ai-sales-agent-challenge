@@ -69,6 +69,11 @@
   .tag.ok { background: rgba(78,201,166,.15); color: var(--ok); }
   .tag.error { background: rgba(224,108,117,.15); color: var(--err); }
   .muted { color: var(--muted); }
+  /* Tabular para o contador não dançar a cada segundo. */
+  .elapsed {
+    font-variant-numeric: tabular-nums; color: var(--muted);
+    font-size: .9rem; margin: .35rem 0 .15rem;
+  }
   footer { color: var(--muted); font-size: .8rem; text-align: center; margin-top: 2rem; }
 </style>
 </head>
@@ -113,7 +118,12 @@ EXAMPLES.forEach((text) => {
   $("examples").appendChild(b);
 });
 
+// Guardado porque a espera esperada depende do provider: modelo local em CPU
+// leva minutos, a API da OpenAI leva segundos.
+let health = null;
+
 fetch("/health").then((r) => r.json()).then((h) => {
+  health = h;
   $("footer").textContent = `${h.dataset_rows.toLocaleString("pt-BR")} linhas carregadas · ${h.provider}/${h.model} (${h.llm})`;
   if (h.llm !== "configured") {
     const banner = $("banner");
@@ -132,6 +142,27 @@ fetch("/health").then((r) => r.json()).then((h) => {
 
 function card(cls, title, inner) {
   return `<div class="card ${cls}"><h2>${title}</h2>${inner}</div>`;
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+function elapsedText(ms) {
+  const total = Math.floor(ms / 1000);
+  if (total < 60) return plural(total, "segundo", "segundos");
+  const min = Math.floor(total / 60);
+  return `${plural(min, "minuto", "minutos")} e ${plural(total % 60, "segundo", "segundos")}`;
+}
+
+// A espera é longa e o front não tem como saber em que passo o agente está: a
+// resposta chega inteira, de uma vez. O que dá para mostrar sem inventar
+// progresso é tempo decorrido e a duração típica deste provider — junto, isso
+// responde a única pergunta que o usuário tem parado na tela: travou ou não?
+function waitingNote() {
+  if (health && health.provider === "ollama") {
+    return "Com modelo local, uma pergunta costuma levar de 1 a 4 minutos — " +
+      "quase tudo é inferência; as consultas ao DuckDB levam milissegundos.";
+  }
+  return "Costuma levar alguns segundos.";
 }
 
 function renderTrace(trace) {
@@ -165,7 +196,16 @@ $("form").onsubmit = async (event) => {
   if (!question) return;
 
   $("submit").disabled = true;
-  $("output").innerHTML = card("", "Consultando", '<p class="muted">O agente está escrevendo e executando SQL…</p>');
+  $("output").innerHTML = card("", "Consultando",
+    '<p>O agente está escrevendo e executando SQL…</p>' +
+    '<p class="elapsed" id="elapsed" aria-live="polite">0 segundos</p>' +
+    `<p class="muted">${waitingNote()}</p>`);
+
+  const started = Date.now();
+  const ticking = setInterval(() => {
+    const el = $("elapsed");
+    if (el) el.textContent = elapsedText(Date.now() - started);
+  }, 1000);
 
   try {
     const response = await fetch("/ask", {
@@ -192,6 +232,7 @@ $("form").onsubmit = async (event) => {
   } catch (err) {
     $("output").innerHTML = card("error", "Erro de rede", `<p>${esc(err.message)}</p>`);
   } finally {
+    clearInterval(ticking);
     $("submit").disabled = false;
   }
 };
