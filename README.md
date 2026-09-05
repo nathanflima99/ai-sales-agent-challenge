@@ -239,6 +239,13 @@ Os padrões estão em `.env.example`.
 atalho, e render da resposta com premissas, ressalvas e o trace de execução
 mostrando o SQL gerado.
 
+Durante a espera ela mostra tempo decorrido e a duração típica do provider em
+uso. Com modelo local são 1 a 4 minutos, e um texto parado por tanto tempo não
+distingue "processando" de "travado" — foi exatamente a dúvida que apareceu
+testando a aplicação à mão. O contador não estima progresso, porque o front não
+tem como saber em que passo o agente está: a resposta chega inteira, de uma vez.
+Ele responde só a pergunta que o usuário realmente tem parado na tela.
+
 ### API
 
 ```bash

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.agent.graph import AgentResult
 from app.agent.state import ToolTrace
-from app.errors import AgentLoopError, LLMError
+from app.errors import AgentLoopError, LLMError, LLMUnavailableError
 from app.main import create_app
 
 
@@ -190,6 +190,28 @@ def test_llm_failure_returns_503_without_a_stack_trace(client):
     assert response.status_code == 503
     assert "Traceback" not in response.text
     assert "provider-host-1" not in response.text
+
+
+def test_unavailable_model_explains_itself_to_the_client(client):
+    """O 503 de modelo fora do ar precisa dizer que é o modelo.
+
+    Antes, a interface mostrava "Erro 503 — Internal server error", que descreve
+    um defeito da aplicação. A causa era o provedor inalcançável e o texto certo
+    já existia no log do servidor: um 503 opaco manda procurar no lugar errado.
+
+    A mensagem é segura porque é escrita por nós; o detalhe da falha continua
+    escondido em `LLMError`, como o teste acima garante.
+    """
+
+    class UnavailableAgent:
+        def run(self, question: str) -> AgentResult:
+            raise LLMUnavailableError("The language model is unavailable right now.")
+
+    client.app.state.agent = UnavailableAgent()
+    response = client.post("/ask", json={"question": "Q"})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["message"] == "The language model is unavailable right now."
 
 
 def test_agent_loop_failure_returns_500_without_internal_detail(client):

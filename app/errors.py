@@ -50,10 +50,32 @@ class QueryExecutionError(AppError):
 
 
 class LLMError(AppError):
-    """Falha na comunicação com o provedor de LLM."""
+    """Falha na comunicação com o provedor de LLM.
+
+    Continua escondendo a mensagem: uma falha de rede traz host, porta e detalhe
+    de infraestrutura, e nada disso pertence à resposta HTTP.
+    """
 
     status_code = 503
     code = "llm_error"
+
+
+class LLMUnavailableError(LLMError):
+    """O provedor está inalcançável ou não está produzindo resposta.
+
+    Existe para separar o diagnóstico do detalhe. A mensagem é escrita por nós,
+    em texto fixo, e a exceção original nunca entra nela — vai para o log via
+    `logger.exception`. Por isso pode ser devolvida apesar do 5xx.
+
+    Sem essa separação, o modelo fora do ar produzia "Erro 503 — Internal server
+    error" na interface, que descreve um defeito da aplicação. A causa real era o
+    provedor inalcançável, e o texto certo já existia no log do servidor: um 503
+    opaco manda o usuário procurar problema no lugar errado.
+    """
+
+    @property
+    def expose_message(self) -> bool:
+        return True
 
 
 class LLMNotConfiguredError(LLMError):

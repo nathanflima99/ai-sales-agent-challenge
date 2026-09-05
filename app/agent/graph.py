@@ -31,7 +31,7 @@ from app.agent.verification import (
 )
 from app.analytics.profiling import DatasetProfile
 from app.config import Settings
-from app.errors import AgentLoopError, AppError, LLMError
+from app.errors import AgentLoopError, AppError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ class SalesAgent:
             raise
         except Exception as exc:  # falha de rede, timeout, erro do provider
             logger.exception("llm call failed")
-            raise LLMError("The language model is unavailable right now.") from exc
+            raise LLMUnavailableError("The language model is unavailable right now.") from exc
 
         update: dict[str, Any] = {"messages": [response], "turns": state["turns"] + 1}
         if _has_content(response):
@@ -350,7 +350,7 @@ class SalesAgent:
         seen = state.get("consecutive_empty", 0) + 1
         if seen >= MAX_CONSECUTIVE_EMPTY:
             logger.warning("model stuck on empty responses", extra={"attempts": seen})
-            raise LLMError(
+            raise LLMUnavailableError(
                 f"The language model returned {seen} empty responses in a row and "
                 f"is not recovering."
             )
